@@ -1,36 +1,118 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Shopping Assistant v3
 
-## Getting Started
+Mobile-first AI shopping assistant with backend orchestrator.
 
-First, run the development server:
+## Architecture
 
+- **Frontend (Antigravity App)**: Thin UI layer - passive renderer only
+- **Backend (n8n workflow)**: Source of truth for all logic, intent detection, and routing
+
+## Key Principles
+
+1. UI contains NO business logic
+2. Backend decides routing (clarification vs recommendation)
+3. UI displays backend responses verbatim
+4. No client-side intent detection or confidence evaluation
+
+## Setup
+
+1. Install dependencies:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Create `.env.local` file:
+```bash
+# Backend API endpoint
+NEXT_PUBLIC_BACKEND_API_URL=http://localhost:3002/api/chat
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+# Shopify store domain (without https://)
+NEXT_PUBLIC_SHOPIFY_DOMAIN=your-store.myshopify.com
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+3. Run development server:
+```bash
+npm run dev
+```
 
-## Learn More
+4. Open [http://localhost:3002](http://localhost:3002)
 
-To learn more about Next.js, take a look at the following resources:
+## Backend Contract
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Request Format
+```json
+{
+  "session_id": "uuid-v4",
+  "current_message": "user's message",
+  "chat_history": [
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": "..." }
+  ]
+}
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Response Types
 
-## Deploy on Vercel
+**Clarification:**
+```json
+{
+  "response_type": "clarification",
+  "intent_id": "...",
+  "confidence": 0.0,
+  "missing_info": ["..."],
+  "clarifying_question": "..."
+}
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**Recommendation:**
+```json
+{
+  "response_type": "recommendation",
+  "intent_id": "...",
+  "confidence": 0.0,
+  "missing_info": [],
+  "products": [...],
+  "explanation": "..."
+}
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Project Structure
+
+```
+src/
+├── app/                    # Next.js app router
+├── components/             # React components
+│   ├── ChatScreen.tsx     # Main UI (stateful container)
+│   ├── UserMessageBubble.tsx
+│   ├── ClarificationMessage.tsx
+│   ├── RecommendationMessage.tsx
+│   ├── ProductCard.tsx
+│   └── ProductList.tsx
+├── lib/
+│   ├── api.ts             # Backend communication
+│   └── utils.ts           # Utilities
+├── types/
+│   └── message.ts         # Type definitions
+└── config.ts              # Configuration
+```
+
+## Logic Boundaries
+
+### ✅ Allowed in UI
+- Session management (generate session ID)
+- State management (chat history in memory)
+- API communication
+- Conditional rendering (based on `response_type`)
+- User interactions (input handling, cart CTA)
+
+### ❌ Forbidden in UI
+- Intent detection
+- Confidence evaluation
+- Routing decisions
+- Missing info detection
+- Product filtering/sorting/ranking
+- Clarifying question generation
+
+## Testing
+
+See `parity_analysis.md` for full test scenarios to prevent logic drift.
