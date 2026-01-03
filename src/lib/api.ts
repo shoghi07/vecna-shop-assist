@@ -58,10 +58,47 @@ export interface RecommendationResponse {
     primary_recommendation?: PresentationProduct; // Rank 1 (only for first page)
     secondary_recommendations: PresentationProduct[]; // Rank 2-3 (or 4-6 on load more)
     acknowledgement: string; // "I found these..."
+    explanation?: string; // Why products fit
     next_page_offset: number | null; // For "Load More"
 }
 
-export type BackendResponse = ClarificationResponse | RecommendationResponse;
+export interface CartActionResponse {
+    response_type: 'cart_action';
+    action: 'add';
+    product_id: string;
+    variant_id: string;
+    product_title: string;
+    acknowledgement: string;
+}
+
+export interface CartSummaryResponse {
+    response_type: 'cart_summary';
+    items: Array<{
+        product_id: string;
+        variant_id: string;
+        title: string;
+        price: string;
+        quantity: number;
+    }>;
+    subtotal: string;
+    shipping: string;
+    tax: string;
+    total: string;
+    currency: string;
+    acknowledgement: string;
+    draft_order_id?: string;
+}
+
+export interface OrderPlacedResponse {
+    response_type: 'order_placed';
+    order_id: string;
+    order_number: string;
+    total: string;
+    currency: string;
+    acknowledgement: string;
+}
+
+export type BackendResponse = ClarificationResponse | RecommendationResponse | CartActionResponse | CartSummaryResponse | OrderPlacedResponse;
 
 // ============================================================================
 // REQUEST VALIDATION (Prevent Malformed Requests)
@@ -128,7 +165,11 @@ export async function sendMessageToBackend(
 
         // Validate response type
         if (!data.response_type ||
-            (data.response_type !== 'clarification' && data.response_type !== 'recommendation')) {
+            (data.response_type !== 'clarification' &&
+                data.response_type !== 'recommendation' &&
+                data.response_type !== 'cart_action' &&
+                data.response_type !== 'cart_summary' &&
+                data.response_type !== 'order_placed')) {
             throw new Error('Invalid response_type from backend');
         }
 

@@ -1,5 +1,5 @@
-import { ChatScreen } from '@/components/ChatScreen';
+import { VoiceMode } from '@/components/VoiceMode';
 
 export default function Home() {
-  return <ChatScreen />;
+  return <VoiceMode />;
 }

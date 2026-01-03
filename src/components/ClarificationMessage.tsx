@@ -8,6 +8,7 @@
  */
 
 import { AssistantClarificationMessage } from '@/types/message';
+import { AudioPlayer } from './AudioPlayer';
 
 interface ClarificationMessageProps {
     message: AssistantClarificationMessage;
@@ -16,8 +17,9 @@ interface ClarificationMessageProps {
 export function ClarificationMessage({ message }: ClarificationMessageProps) {
     return (
         <div className="flex justify-start mb-4">
-            <div className="max-w-[80%] bg-muted rounded-2xl rounded-tl-sm px-4 py-3">
-                <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+            <div className="max-w-[80%] bg-muted rounded-2xl rounded-tl-sm px-4 py-3 flex items-start gap-2">
+                <p className="text-sm whitespace-pre-wrap break-words flex-1">{message.content}</p>
+                <AudioPlayer text={message.content} autoPlay={false} />
             </div>
         </div>
     );

@@ -23,6 +23,8 @@ interface GeminiResponse {
     acknowledgement: string;      // New: User acknowledgement
     clarifying_question?: string; // New: If low confidence
     explanation: string;          // New: Reasoning for intent/question
+    cart_action?: 'add' | 'summary' | 'place_order' | null;   // New: Cart action detection
+    product_index?: number;       // New: Which product to add (0-based)
 }
 
 interface ClarificationResponse {
@@ -43,6 +45,42 @@ interface RecommendationResponse {
     products: any[];
     acknowledgement: string;
     explanation: string;
+}
+
+interface CartActionResponse {
+    response_type: 'cart_action';
+    action: 'add';
+    product_id: string;
+    variant_id: string;
+    product_title: string;
+    acknowledgement: string;
+}
+
+interface CartSummaryResponse {
+    response_type: 'cart_summary';
+    items: Array<{
+        product_id: string;
+        variant_id: string;
+        title: string;
+        price: string;
+        quantity: number;
+    }>;
+    subtotal: string;
+    shipping: string;
+    tax: string;
+    total: string;
+    currency: string;
+    acknowledgement: string;
+    draft_order_id?: string;
+}
+
+interface OrderPlacedResponse {
+    response_type: 'order_placed';
+    order_id: string;
+    order_number: string;
+    total: string;
+    currency: string;
+    acknowledgement: string;
 }
 
 // Helper: call Gemini for intent classification (uses cached intents)
@@ -89,16 +127,93 @@ Once confidence is sufficient (>= 0.7), fetch and rank products.
 6. Explanation & Guidance
 Explain recommendations in simple, benefit-oriented language.
 
+CONVERSATIONAL COMMERCE BEHAVIORS
+After recommendations are provided, engage naturally with these behaviors:
+
+1. EXPLANATION MODE
+When confident (>= 0.7) and ready to recommend:
+- In your "explanation" field, connect product features DIRECTLY to the user's stated goals
+- Reference their specific use case (e.g., "wedding photography", "travel vlogging", "beginner learning")
+- Make it conversational and benefit-focused, not technical spec listing
+- Example: "For wedding photography, this camera's 45MP sensor captures stunning detail in both bright churches and low-light receptions. The fast autofocus ensures you never miss the first kiss or ring exchange."
+
+2. COMPARISON MODE
+If user asks to compare products (signals: "compare", "what's better", "difference between", "vs"):
+- In your "explanation" field, provide a clear comparison
+- Highlight 2-3 key differentiators relevant to THEIR intent
+- End with a recommendation based on their specific needs
+- Example: "The Canon R5 ($3,899) has 45MP vs Sony A7IV's 33MP - better for large prints. The R5 also shoots 8K video vs 4K. For wedding photography where detail matters, I'd recommend the R5. But if budget is tight, the A7IV is still excellent."
+
+3. CONVERSION MODE
+After providing explanation or comparison:
+- In your "acknowledgement" field, naturally suggest next steps
+- Use phrases like: "Would you like to add this to your cart?", "Ready to proceed with this one?", "Should I prepare this for checkout?"
+- Keep it helpful, not pushy
+- Example acknowledgement: "The Canon EOS R5 is perfect for your needs. When you're ready, just tap 'Add to Cart' below and it's yours!"
+
+IMPORTANT: You provide the explanation and suggestion. The user will click the "Add to Cart" button to actually add items. Your role is conversational guidance.
+
 Input Understanding Parameters
 You may receive the following input types:
 1. Free-text user query
 2. Follow-up responses
 3. Implicit signals
+4. Comparison requests
+5. Purchase interest signals
 
 Evaluation Rules
 Always infer use case before product type.
 Detect multi-intent possibilities and resolve them conversationally.
 If required intent attributes are missing, prompt the user clearly.
+If user asks to compare, identify which products and provide comparison in explanation.
+After recommendations, suggest adding to cart in acknowledgement.
+
+CART ACTION DETECTION (CRITICAL):
+If the user requests to add a product to cart via voice, detect this and respond with cart action.
+
+Cart Action Signals:
+- "add it", "add this", "add that", "add to cart"
+- "I'll take it", "I'll buy it", "I want this"
+- "add the first one", "add the second", "add the primary recommendation"
+- "buy this", "purchase it", "get this"
+
+When detected:
+- Set "cart_action" to "add"
+- Set "product_index" to which product (0 = primary/first, 1 = second, 2 = third)
+- If user says "add it/this" without specifying which, default to 0 (primary)
+- Set "acknowledgement" to a conversational confirmation that:
+  1. Confirms the addition ("Added [product name] to your cart!")
+  2. Offers next steps ("Ready to checkout?" OR "Would you like anything else?")
+  3. Keeps it friendly and helpful
+  
+Examples of good acknowledgements:
+- "Added Canon EOS R5 to your cart! Would you like to checkout now, or continue shopping?"
+- "Perfect! I've added that to your cart. Need anything else, or ready to proceed with checkout?"
+- "Got it! That's in your cart now. Looking for accessories, or shall we head to checkout?"
+
+CART SUMMARY DETECTION:
+If user asks about cart contents or total cost, detect this.
+
+Cart Summary Signals:
+- "what's in my cart", "show cart", "cart contents"
+- "how much", "what's the total", "show me the total"
+- "what's the cost", "how much is it"
+
+When detected:
+- Set "cart_action" to "summary"
+- Set "acknowledgement" to friendly intro like "Let me check your cart for you..."
+
+ORDER PLACEMENT DETECTION:
+If user confirms order placement, detect this.
+
+Order Placement Signals:
+- "place order", "place my order", "complete checkout"
+- "buy it", "purchase now", "proceed with order"
+- "yes place it", "confirm order", "checkout"
+
+When detected:
+- Set "cart_action" to "place_order"
+- Set "acknowledgement" to "Processing your order..."
 
 Allowed Intents:
 ${intents.map(i => `${i.intent_id}: ${i.description || i.name}`).join('\n')}
@@ -109,8 +224,11 @@ Rules:
 - Confidence reflects certainty across the conversation (0.0 to 1.0)
 - Identify missing info that blocks recommendation
 - IMPORTANT: If confidence < 0.7 OR missing critical info, GENERATE "clarifying_question".
-- "acknowledgement": A brief, empathetic acknowledgement of the user's input.
-- "explanation": Brief reason for your decision (why you are asking a question OR why you chose this intent).
+- "acknowledgement": A brief, empathetic acknowledgement. After recommendations, suggest adding to cart naturally.
+- "explanation": Detailed reason connecting product to user's goals. For comparisons, provide clear differentiation.
+- "cart_action": Optional. Set to "add" if user wants to add to cart.
+- "product_index": Optional. Which product to add (0 = first, 1 = second, 2 = third).
+- "cart_action": Can also be "summary" if user asks about cart, or "place_order" if confirming purchase.
 - Respond with ONLY the raw JSON object, no markdown, no code fences.
 
 Conversation so far:
@@ -126,7 +244,9 @@ Return JSON ONLY:
   "missing_info": string[],
   "acknowledgement": "string",
   "clarifying_question": "string (optional, required if confidence < 0.7)",
-  "explanation": "string"
+  "explanation": "string",
+  "cart_action": "add" | "summary" | "place_order" | null (optional),
+  "product_index": number (optional, 0-based index, only for "add")
 }`;
 
     const requestBody = {
@@ -199,14 +319,17 @@ TASK:
     -   Write a "description" (1-2 sentences) about why it fits the intent.
     -   Write a "reasoning" (bullet points or short paragraph) detailing its benefits for this specific user.
     -   Extract key "features" as a list.
+    -   IMPORTANT: Include the exact "variant_id" from the source product data.
 3.  **Secondary Recommendations**: For the remaining products, write a short "description" (1 sentence) on why they are good alternatives.
     -   Do NOT create "reasoning" for secondary items.
+    -   IMPORTANT: Include the exact "variant_id" from each product's source data.
 
 OUTPUT JSON ONLY:
 {
   "acknowledgement": "string",
   "primary": {
     "product_id": "string",
+    "variant_id": "string",
     "title": "string",
     "price": "string",
     "image_url": "string",
@@ -217,6 +340,7 @@ OUTPUT JSON ONLY:
   "secondary": [
     {
       "product_id": "string",
+      "variant_id": "string",
       "title": "string",
       "price": "string",
       "image_url": "string",
@@ -264,6 +388,110 @@ OUTPUT JSON ONLY:
     }
 }
 
+// Helper: Create draft order for cart summary (no address needed for calculation)
+async function createDraftOrderForSummary(cartItems: any[]) {
+    const shopifyResponse = await fetch('/api/shopify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'create_draft_order',
+            adminToken: process.env.SHOPIFY_ADMIN_TOKEN,
+            params: {
+                payload: {
+                    draft_order: {
+                        line_items: cartItems.map(item => ({
+                            variant_id: parseInt(item.variant_id),
+                            quantity: item.quantity || 1
+                        })),
+                        currency: 'INR'
+                    }
+                }
+            }
+        })
+    });
+
+    if (!shopifyResponse.ok) {
+        throw new Error('Failed to create draft order for summary');
+    }
+
+    return await shopifyResponse.json();
+}
+
+// Helper: Create draft order with address for order placement
+async function createDraftOrderWithAddress(cartItems: any[], address: any) {
+    const shopifyResponse = await fetch('/api/shopify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'create_draft_order',
+            adminToken: process.env.SHOPIFY_ADMIN_TOKEN,
+            params: {
+                payload: {
+                    draft_order: {
+                        email: address.email || 'customer@example.com',
+                        shipping_address: {
+                            first_name: address.first_name,
+                            last_name: address.last_name,
+                            address1: address.address1,
+                            city: address.city,
+                            province: address.province,
+                            country: address.country || 'IN',
+                            zip: address.zip,
+                            phone: address.phone
+                        },
+                        billing_address: {
+                            first_name: address.first_name,
+                            last_name: address.last_name,
+                            address1: address.address1,
+                            city: address.city,
+                            province: address.province,
+                            country: address.country || 'IN',
+                            zip: address.zip,
+                            phone: address.phone
+                        },
+                        line_items: cartItems.map(item => ({
+                            variant_id: parseInt(item.variant_id),
+                            quantity: item.quantity || 1
+                        })),
+                        shipping_line: {
+                            title: 'Standard Shipping',
+                            price: '0.00' // Will be calculated by Shopify
+                        },
+                        currency: 'INR'
+                    }
+                }
+            }
+        })
+    });
+
+    if (!shopifyResponse.ok) {
+        throw new Error('Failed to create draft order with address');
+    }
+
+    return await shopifyResponse.json();
+}
+
+// Helper: Complete draft order to create real order
+async function completeDraftOrder(draftOrderId: string) {
+    const shopifyResponse = await fetch('/api/shopify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'complete_draft_order',
+            adminToken: process.env.SHOPIFY_ADMIN_TOKEN,
+            params: {
+                draft_order_id: draftOrderId
+            }
+        })
+    });
+
+    if (!shopifyResponse.ok) {
+        throw new Error('Failed to complete draft order');
+    }
+
+    return await shopifyResponse.json();
+}
+
 export async function POST(req: Request) {
     try {
         const body: ChatRequest = await req.json();
@@ -294,6 +522,152 @@ export async function POST(req: Request) {
             acknowledgement = classification.acknowledgement;
             clarifying_question = classification.clarifying_question;
             explanation = classification.explanation;
+
+            // CART ACTION DETECTION: Handle before clarification/recommendation
+            if (classification.cart_action === 'add' && typeof classification.product_index === 'number') {
+                // User wants to add a product to cart via voice
+                // We need to get the product from session context
+                // For now, store last recommendation in session (passed from frontend)
+                const lastProducts = (body as any).last_products; // Frontend should send this
+
+                if (lastProducts && lastProducts[classification.product_index]) {
+                    const productToAdd = lastProducts[classification.product_index];
+                    const cartResponse: CartActionResponse = {
+                        response_type: 'cart_action',
+                        action: 'add',
+                        product_id: productToAdd.product_id,
+                        variant_id: productToAdd.variant_id,
+                        product_title: productToAdd.title,
+                        acknowledgement: acknowledgement || `Added ${productToAdd.title} to your cart!`,
+                    };
+                    return NextResponse.json(cartResponse);
+                } else {
+                    // No products in context - ask for clarification
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: ['product_context'],
+                        acknowledgement: "I'd love to add that for you!",
+                        clarifying_question: "Which product would you like? Could you search for something first?",
+                        explanation: "No products available to add to cart.",
+                    };
+                    return NextResponse.json(response);
+                }
+            }
+
+            // CART SUMMARY DETECTION: Show cart contents and totals
+            if (classification.cart_action === 'summary') {
+                const cartItems = (body as any).cart_items || [];
+
+                if (!cartItems || cartItems.length === 0) {
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: ['cart_items'],
+                        acknowledgement: "Your cart is empty!",
+                        clarifying_question: "Would you like to search for products?",
+                        explanation: "No items in cart yet.",
+                    };
+                    return NextResponse.json(response);
+                }
+
+                try {
+                    // Create draft order to calculate shipping & tax
+                    const draftOrderResponse = await createDraftOrderForSummary(cartItems);
+                    const draftOrder = draftOrderResponse.draft_order;
+
+                    const summaryResponse: CartSummaryResponse = {
+                        response_type: 'cart_summary',
+                        items: cartItems,
+                        subtotal: draftOrder.subtotal_price || '0',
+                        shipping: draftOrder.total_shipping_price_set?.shop_money?.amount || '0',
+                        tax: draftOrder.total_tax || '0',
+                        total: draftOrder.total_price || '0',
+                        currency: 'INR',
+                        acknowledgement: acknowledgement || `You have ${cartItems.length} item${cartItems.length > 1 ? 's' : ''} in your cart.`,
+                        draft_order_id: draftOrder.id
+                    };
+                    return NextResponse.json(summaryResponse);
+                } catch (error) {
+                    console.error('Cart summary error:', error);
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: [],
+                        acknowledgement: acknowledgement,
+                        clarifying_question: "I had trouble calculating your cart total. Would you like to try again?",
+                        explanation: "Error creating draft order for summary.",
+                    };
+                    return NextResponse.json(response);
+                }
+            }
+
+            // ORDER PLACEMENT DETECTION: Place the order
+            if (classification.cart_action === 'place_order') {
+                const cartItems = (body as any).cart_items || [];
+                const address = (body as any).address;
+
+                if (!cartItems || cartItems.length === 0) {
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: ['cart_items'],
+                        acknowledgement: "Your cart is empty!",
+                        clarifying_question: "You need to add items before placing an order. Would you like to search for products?",
+                        explanation: "No items to order.",
+                    };
+                    return NextResponse.json(response);
+                }
+
+                if (!address) {
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: ['address'],
+                        acknowledgement: "I'll need your delivery address.",
+                        clarifying_question: "Please provide your delivery address including street, city, state, and PIN code.",
+                        explanation: "Need address for order placement.",
+                    };
+                    return NextResponse.json(response);
+                }
+
+                try {
+                    // Create draft order with address
+                    const draftOrderResponse = await createDraftOrderWithAddress(cartItems, address);
+                    const draftOrder = draftOrderResponse.draft_order;
+
+                    // Complete draft order to create real order
+                    const completedOrderResponse = await completeDraftOrder(draftOrder.id);
+                    const order = completedOrderResponse.draft_order;
+
+                    const orderResponse: OrderPlacedResponse = {
+                        response_type: 'order_placed',
+                        order_id: order.id,
+                        order_number: order.order_number || order.name || draftOrder.id,
+                        total: order.total_price || draftOrder.total_price,
+                        currency: 'INR',
+                        acknowledgement: acknowledgement || `Order placed successfully! Your order #${order.order_number || draftOrder.id} will arrive soon.`
+                    };
+                    return NextResponse.json(orderResponse);
+                } catch (error) {
+                    console.error('Order placement error:', error);
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: [],
+                        acknowledgement: acknowledgement,
+                        clarifying_question: "I had trouble placing your order. Would you like to try again?",
+                        explanation: "Error creating or completing draft order.",
+                    };
+                    return NextResponse.json(response);
+                }
+            }
 
             // 2. Determine state: Clarification vs Recommendation
             if (confidence < 0.7 || (clarifying_question && clarifying_question.trim().length > 0)) {
@@ -336,6 +710,7 @@ export async function POST(req: Request) {
             primary_recommendation: offset === 0 ? presentation.primary : undefined,
             secondary_recommendations: offset === 0 ? presentation.secondary : [presentation.primary, ...presentation.secondary].filter(Boolean),
             acknowledgement: presentation.acknowledgement,
+            explanation: explanation || '', // Add explanation from classification
             next_page_offset: topProducts.length === 3 ? offset + 3 : null,
         };
         return NextResponse.json(response);

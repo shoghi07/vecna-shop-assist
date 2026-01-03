@@ -20,7 +20,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Mic, MicOff, Loader2 } from 'lucide-react';
-import { transcribeAudio, isAudioRecordingSupported } from '@/lib/transcription';
+import { transcribeAudio, isAudioRecordingSupported, initElevenLabs } from '@/lib/elevenlabs';
 import { config } from '@/config';
 import { toast } from 'sonner';
 
@@ -40,6 +40,10 @@ export function VoiceInput({ onTranscriptionComplete, disabled }: VoiceInputProp
     const [isSupported, setIsSupported] = useState(false);
 
     useEffect(() => {
+        // Initialize ElevenLabs with API key
+        if (config.elevenlabs.apiKey) {
+            initElevenLabs(config.elevenlabs.apiKey, config.elevenlabs.voiceId);
+        }
         setIsSupported(isAudioRecordingSupported());
     }, []);
 

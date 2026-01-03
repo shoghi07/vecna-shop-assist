@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { ChevronRight } from 'lucide-react';
 import Image from 'next/image';
+import { AudioPlayer } from './AudioPlayer';
 
 interface RecommendationMessageProps {
     message: AssistantRecommendationMessage;
@@ -30,8 +31,9 @@ export function RecommendationMessage({ message, onAddToCart, onLoadMore }: Reco
         <div className="flex flex-col gap-6 mb-8 w-full max-w-3xl">
             {/* Acknowledgement/Intro */}
             <div className="flex justify-start">
-                <div className="bg-muted/50 rounded-2xl rounded-tl-sm px-5 py-4">
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+                <div className="bg-muted/50 rounded-2xl rounded-tl-sm px-5 py-4 flex items-start gap-2">
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap flex-1">{message.content}</p>
+                    <AudioPlayer text={message.content} autoPlay={false} />
                 </div>
             </div>
 

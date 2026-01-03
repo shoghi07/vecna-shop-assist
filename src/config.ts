@@ -46,4 +46,10 @@ export const config = {
     // Recording settings
     maxRecordingDuration: 60000, // 60 seconds max
   },
+
+  // ElevenLabs configuration (voice I/O)
+  elevenlabs: {
+    apiKey: process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '',
+    voiceId: '21m00Tcm4TlvDq8ikWAM', // Rachel - default female voice
+  },
 } as const;
