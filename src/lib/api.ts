@@ -161,9 +161,11 @@ export async function sendMessageToBackend(
     payload: ChatRequest
 ): Promise<BackendResponse> {
     // Validate request before sending
+    console.log('📡 sending message to backend:', payload);
     validateChatRequest(payload);
 
     try {
+        console.log('📡 fetch url:', config.backend.apiUrl);
         const response = await fetch(config.backend.apiUrl, {
             method: 'POST',
             headers: {
@@ -184,7 +186,9 @@ export async function sendMessageToBackend(
                 data.response_type !== 'recommendation' &&
                 data.response_type !== 'cart_action' &&
                 data.response_type !== 'cart_summary' &&
-                data.response_type !== 'order_placed')) {
+                data.response_type !== 'order_placed' &&
+                data.response_type !== 'image_generation')) {
+            console.error('Invalid response_type received:', data.response_type, data);
             throw new Error('Invalid response_type from backend');
         }
 

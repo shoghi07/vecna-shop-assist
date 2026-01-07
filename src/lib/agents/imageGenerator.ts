@@ -1,4 +1,5 @@
 import { OutcomeContext } from '@/types/session';
+import { getVertexAccessToken, getVertexCredentials } from '../vertexAuth';
 
 export interface GeneratedImage {
     url: string;
@@ -42,70 +43,231 @@ export async function generateOutcomeImages(
     ];
 
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    if (!apiKey) {
-        console.warn('NEXT_PUBLIC_GEMINI_API_KEY not configured - using mock images');
+    const vertexCreds = getVertexCredentials();
+    const hfToken = process.env.HUGGING_FACE_ACCESS_TOKEN;
+    const hfModel = process.env.HUGGING_FACE_MODEL || 'black-forest-labs/FLUX.1-schnell';
+
+    console.log('DEBUG: Env check - HF Token:', hfToken ? 'Present' : 'Missing', 'API Key:', apiKey ? 'Present' : 'Missing');
+
+    // Strategy 1: Hugging Face (Priority if configured)
+    if (hfToken) {
+        try {
+            console.log(`🚀 Attempting image generation via Hugging Face (${hfModel})...`);
+
+            const images = await Promise.all(
+                variants.map(async (variant) => {
+                    const prompt = `${basePrompt}, ${variant.style}, professional photography, high quality, sharp focus, no text overlays, no brand logos`;
+
+                    const response = await fetch(
+                        `https://router.huggingface.co/hf-inference/models/${hfModel}`,
+                        {
+                            headers: {
+                                Authorization: `Bearer ${hfToken}`,
+                                "Content-Type": "application/json",
+                            },
+                            method: "POST",
+                            body: JSON.stringify({
+                                inputs: prompt,
+                                parameters: {
+                                    width: 512, // Standard square for FLUX/SD
+                                    height: 512
+                                }
+                            }),
+                        }
+                    );
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        if (response.status === 503) {
+                            throw new Error('Hugging Face model loading/busy (503)');
+                        }
+                        throw new Error(`Hugging Face error ${response.status}: ${errorText}`);
+                    }
+
+                    // Hugging Face inference API returns a Blob (image) usually, or 
+                    // sometimes JSON depending on the model pipeline. 
+                    // For FLUX/SD image-to-text, it returns the raw image blob.
+                    const imageBlob = await response.blob();
+                    const arrayBuffer = await imageBlob.arrayBuffer();
+                    const base64 = Buffer.from(arrayBuffer).toString('base64');
+
+                    return {
+                        url: `data:image/jpeg;base64,${base64}`,
+                        variant_id: variant.id,
+                        caption: `${variant.description}: ${outcomeContext.use_case || outcomeContext.desired_outcome || 'your goal'}`,
+                        interpretation: `${outcomeContext.desired_outcome || 'Outcome visualization'}`
+                    };
+                })
+            );
+
+            console.log('✅ Generated REAL images via Hugging Face');
+            return images;
+
+        } catch (error) {
+            console.error('Hugging Face generation failed:', error);
+            console.warn('Falling back to Vertex / Mocks');
+            // Fall through to next strategy
+        }
+    }
+
+    // Strategy 2: Vertex AI (Priority if configured)
+    if (vertexCreds) {
+        try {
+            console.log('🚀 Attempting image generation via Vertex AI...');
+            const accessToken = await getVertexAccessToken();
+
+            const images = await Promise.all(
+                variants.map(async (variant) => {
+                    const prompt = `${basePrompt}, ${variant.style}, professional photography, high quality, sharp focus, no text overlays, no brand logos`;
+
+                    const endpoint = `https://us-central1-aiplatform.googleapis.com/v1/projects/${vertexCreds.projectId}/locations/us-central1/publishers/google/models/imagen-3.0-generate-001:predict`;
+
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${accessToken}`,
+                            'Content-Type': 'application/json; charset=utf-8'
+                        },
+                        body: JSON.stringify({
+                            instances: [{ prompt: prompt }],
+                            parameters: {
+                                sampleCount: 1,
+                                aspectRatio: "1:1"
+                            }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        // Handle Quota Error gracefully
+                        if (response.status === 429) {
+                            console.warn('⚠️ Vertex AI Quota Exceeded (429). Falling back to mocks.');
+                            throw new Error(`QUOTA_EXCEEDED`);
+                        }
+                        throw new Error(`Vertex AI error ${response.status}: ${errorText}`);
+                    }
+
+                    const data = await response.json();
+
+                    // Handle Vertex AI response format
+                    // { predictions: [ { bytesBase64Encoded: "..." } ] }
+                    const imageBase64 = data.predictions?.[0]?.bytesBase64Encoded; // Imagen 2/3 format on Vertex
+
+                    if (!imageBase64) {
+                        console.error('Vertex AI response missing image data:', JSON.stringify(data).substring(0, 200));
+                        throw new Error('No image data in Vertex AI response');
+                    }
+
+                    return {
+                        url: `data:image/png;base64,${imageBase64}`,
+                        variant_id: variant.id,
+                        caption: `${variant.description}: ${outcomeContext.use_case || outcomeContext.desired_outcome || 'your goal'}`,
+                        interpretation: `${outcomeContext.desired_outcome || 'Outcome visualization'}`
+                    };
+                })
+            );
+
+            console.log('✅ Generated REAL images via Vertex AI');
+            return images;
+
+        } catch (error) {
+            console.error('Vertex AI generation failed:', error);
+            console.warn('Falling back to Generative Language API / Mocks');
+            // Fall through to next strategy
+        }
+    }
+
+    if (!apiKey && !vertexCreds && !hfToken) {
+        console.warn('No API keys configured - using mock images');
         return generateMockImages(outcomeContext, variants);
     }
 
-    // Try real Imagen API first
+    // Strategy 3: Generative Language API (Fallback)
     try {
         const images = await Promise.all(
             variants.map(async (variant) => {
                 const prompt = `${basePrompt}, ${variant.style}, professional photography, high quality, sharp focus, no text overlays, no brand logos`;
 
-                // Call Gemini Imagen 3 API
-                const response = await fetch(
-                    `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:generateImages?key=${apiKey}`,
+                // Try Imagen 3 first, then fallback to alternative endpoints
+                const endpoints = [
+                    // Original Imagen 3 endpoint
                     {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
+                        url: `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:generateImages?key=${apiKey}`,
+                        body: {
                             prompt: prompt,
                             number_of_images: 1,
                             aspect_ratio: '1:1',
                             safety_filter_level: 'block_some',
                             person_generation: 'allow_adult'
-                        })
+                        }
+                    },
+                    // Try alternative model name
+                    {
+                        url: `https://generativelanguage.googleapis.com/v1beta/models/imagegeneration-002:predict?key=${apiKey}`,
+                        body: {
+                            instances: [{ prompt: prompt }],
+                            parameters: {
+                                sampleCount: 1,
+                                aspectRatio: '1:1'
+                            }
+                        }
                     }
-                );
+                ];
 
-                if (!response.ok) {
-                    const errorBody = await response.text();
-                    console.error(`Imagen API error ${response.status}:`, errorBody);
-                    throw new Error(`Imagen API error: ${response.status}`);
+                let lastError: Error | null = null;
+
+                for (const endpoint of endpoints) {
+                    try {
+                        const response = await fetch(endpoint.url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(endpoint.body)
+                        });
+
+                        if (!response.ok) {
+                            // Silent fail to try next endpoint
+                            lastError = new Error(`API error: ${response.status}`);
+                            continue;
+                        }
+
+                        const data = await response.json();
+
+                        const imageBase64 = data.generatedImages?.[0]?.imageBytes ||
+                            data.predictions?.[0]?.bytesBase64Encoded ||
+                            data.images?.[0]?.data;
+
+                        if (!imageBase64) {
+                            lastError = new Error('No image generated');
+                            continue;
+                        }
+
+                        // Success!
+                        return {
+                            url: `data:image/png;base64,${imageBase64}`,
+                            variant_id: variant.id,
+                            caption: `${variant.description}: ${outcomeContext.use_case || outcomeContext.desired_outcome || 'your goal'}`,
+                            interpretation: `${outcomeContext.desired_outcome || 'Outcome visualization'}`
+                        };
+
+                    } catch (error) {
+                        lastError = error as Error;
+                        continue;
+                    }
                 }
 
-                const data = await response.json();
-                // console.log('Imagen API response:', JSON.stringify(data).substring(0, 200));
-
-                // Gemini Imagen 3 returns generated images in this format
-                const imageBase64 = data.generatedImages?.[0]?.imageBytes;
-
-                if (!imageBase64) {
-                    // console.error('No imageBytes in response. Full response:', JSON.stringify(data));
-                    throw new Error('No image generated');
-                }
-
-                // Convert to data URL for frontend display
-                const imageUrl = `data:image/png;base64,${imageBase64}`;
-
-                return {
-                    url: imageUrl,
-                    variant_id: variant.id,
-                    caption: `${variant.description}: ${outcomeContext.use_case || 'your goal'}`,
-                    interpretation: `${variant.style} for ${outcomeContext.desired_outcome}`
-                };
+                // All endpoints failed - throw last error
+                throw lastError || new Error('All image generation endpoints failed');
             })
         );
 
-        console.log('✅ Generated real Imagen images');
+        console.log('✅ Generated real Imagen images via GenAI API');
         return images;
 
     } catch (error) {
-        // Imagen API completely failed
-        console.warn('Imagen API unavailable, using mock images');
+        // All APIs failed
+        console.warn('All image generation APIs failed, using mock images');
         return generateMockImages(outcomeContext, variants);
     }
 }

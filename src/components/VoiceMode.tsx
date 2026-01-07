@@ -229,11 +229,14 @@ export function VoiceMode() {
 
             await playTTS(ttsText);
 
+            return response; // Return full response for external handling
+
         } catch (error) {
             console.error('Voice conversation error:', error);
             toast.error('Something went wrong. Try again?');
             setAgentState(null);
             setIsProcessing(false);
+            throw error; // Re-throw to caller
         }
     };
 
@@ -284,6 +287,7 @@ export function VoiceMode() {
         action: 'accept' | 'refine' | 'reject',
         variantId?: string | null
     ) => {
+        console.log('👇 handleImageSelection called:', { action, variantId, sessionId });
         setIsProcessing(true);
         if (action === 'accept' && variantId) {
             // User accepted - proceed to products
@@ -294,6 +298,7 @@ export function VoiceMode() {
                     chat_history: chatHistory,
                     action: 'accept_image',
                     selected_variant: variantId,
+                    intent_id: currentResponse?.intent_id, // Pass existing intent context
                     cached_products: cachedProducts, // Phase 4: Send pre-fetched products
                     last_products: [],
                     cart_items: cartItems.map(item => ({
@@ -320,6 +325,20 @@ export function VoiceMode() {
                         ...chatHistory,
                         { role: 'assistant', content: response.acknowledgement }
                     ]);
+                } else if (response.response_type === 'clarification') {
+                    // Handle case where NO products were found -> guidance/question
+                    console.log('⚠️ No products found, switching to clarification');
+                    setImageConfirmationPhase(false); // Close modal
+                    setSelectedImageVariant(null);
+
+                    // Speak guidance: Combine acknowledgement + question
+                    const ttsMessage = `${response.acknowledgement} ${response.clarifying_question}`;
+                    await playTTS(ttsMessage);
+                    // Add to history
+                    setChatHistory([
+                        ...chatHistory,
+                        { role: 'assistant', content: ttsMessage }
+                    ]);
                 }
             } catch (error) {
                 console.error('Image acceptance failed:', error);
@@ -330,7 +349,7 @@ export function VoiceMode() {
             // Phase 5: User wants more specific intent clarification
             setImageConfirmationPhase(false);
             setIsProcessing(true);
-            
+
             try {
                 const response = await sendMessageToBackend({
                     session_id: sessionId,
@@ -346,7 +365,7 @@ export function VoiceMode() {
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
-                
+
                 if (response.response_type === 'clarification') {
                     await playTTS(response.clarifying_question);
                     setClarificationCount(response.clarification_count || clarificationCount + 1);
@@ -355,14 +374,14 @@ export function VoiceMode() {
                 console.error('Refine handling failed:', error);
                 toast.error('Failed to process refinement. Please try again.');
             }
-            
+
             setSelectedImageVariant(null);
         }
         if (action === 'reject') {
             // Phase 5: User's intent isn't captured - ask clarifying question
             setImageConfirmationPhase(false);
             setIsProcessing(true);
-            
+
             try {
                 const response = await sendMessageToBackend({
                     session_id: sessionId,
@@ -378,7 +397,7 @@ export function VoiceMode() {
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
-                
+
                 if (response.response_type === 'clarification') {
                     await playTTS(response.clarifying_question);
                     setClarificationCount(response.clarification_count || clarificationCount + 1);
@@ -389,7 +408,7 @@ export function VoiceMode() {
                 console.error('Reject handling failed:', error);
                 toast.error('Failed to process feedback. Please try again.');
             }
-            
+
             setSelectedImageVariant(null);
         }
         setAgentState(null);
@@ -483,20 +502,31 @@ export function VoiceMode() {
                             </p>
                         </div>
 
-                        {/* Primary Recommendation */}
-                        {currentResponse.primary_recommendation && (
-                            <div className="bg-card border-2 border-primary/20 rounded-lg p-4 shadow-lg">
-                                <div className="flex items-start gap-4">
-                                    <div className="relative w-32 h-32 flex-shrink-0 bg-white rounded-md overflow-hidden">
+                        {/* Product Recommendations */}
+                        {!currentResponse.primary_recommendation ? (
+                            <div className="flex flex-col items-center justify-center p-8 text-center bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                                <span className="text-4xl mb-4">🔍</span>
+                                <h3 className="text-lg font-medium text-gray-900 mb-2">No matching products found</h3>
+                                <p className="text-gray-500 max-w-sm">
+                                    I've confirmed your visual preference, but I couldn't find exact products in our catalog for this specific intent yet.
+                                </p>
+                            </div>
+                        ) : (
+                            <div className="bg-white rounded-xl shadow-sm border border-border p-4 mb-4 transform transition-all hover:scale-[1.01]">
+                                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                                    Best Match
+                                </h4>
+                                <div className="flex gap-4">
+                                    <div className="relative w-32 h-32 flex-shrink-0 bg-gray-50 rounded-lg overflow-hidden border">
                                         <img
                                             src={currentResponse.primary_recommendation.image_url}
                                             alt={currentResponse.primary_recommendation.title}
-                                            className="w-full h-full object-contain"
+                                            className="w-full h-full object-contain p-2"
                                         />
                                     </div>
                                     <div className="flex-1">
-                                        <div className="flex items-start justify-between mb-2">
-                                            <h3 className="font-semibold text-lg line-clamp-2">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <h3 className="font-semibold text-lg leading-tight">
                                                 {currentResponse.primary_recommendation.title}
                                             </h3>
                                             <span className="text-primary font-bold text-xl ml-4">
