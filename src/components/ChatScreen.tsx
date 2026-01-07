@@ -69,9 +69,9 @@ export function ChatScreen() {
             role: 'assistant' as const,
             timestamp: new Date().toISOString(),
             metadata: {
-                intentId: response.intent_id,
-                confidence: response.confidence,
-                missingInfo: response.missing_info,
+                intentId: (response as any).intent_id || '',
+                confidence: (response as any).confidence || 0,
+                missingInfo: (response as any).missing_info || [],
             },
         };
 
@@ -81,17 +81,25 @@ export function ChatScreen() {
                 responseType: 'clarification',
                 content: response.clarifying_question,
             } as AssistantClarificationMessage;
-        } else {
+        }
+
+        if (response.response_type === 'recommendation') {
             return {
                 ...baseMessage,
-                responseType: 'recommendation',
-                content: response.acknowledgement,
-                primary_recommendation: response.primary_recommendation,
-                secondary_recommendations: response.secondary_recommendations,
-                next_page_offset: response.next_page_offset,
-                intentId: response.intent_id,
+                responseType: 'recommendation' as const,
+                content: response.acknowledgement || 'Here are my recommendations',
+                primary_recommendation: (response as any).primary_recommendation,
+                secondary_recommendations: (response as any).secondary_recommendations,
+                next_page_offset: (response as any).next_page_offset,
+                intentId: (response as any).intent_id,
             } as AssistantRecommendationMessage;
         }
+        // Fallback for unexpected response types, though ideally BackendResponse type would prevent this
+        return {
+            ...baseMessage,
+            responseType: 'clarification', // Default to clarification or a generic error message
+            content: 'I am sorry, I could not understand the response.',
+        } as AssistantClarificationMessage;
     };
 
     // Send message to backend

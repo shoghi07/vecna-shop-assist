@@ -10,12 +10,12 @@
  * - Even if products array is empty, render the container
  */
 
-import { ProductData } from '@/lib/api';
+// ProductData type removed - using any for now
 import { ProductCard } from './ProductCard';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 
 interface ProductListProps {
-    products: ProductData[];
+    products: any[];
     onAddToCart: (variantId: string) => void;
 }
 

@@ -10,12 +10,12 @@
  * - Only add to cart when user explicitly clicks CTA
  */
 
-import { ProductData } from '@/lib/api';
+// ProductData type removed - using any for now
 import { Button } from '@/components/ui/button';
 import Image from 'next/image';
 
 interface ProductCardProps {
-    product: ProductData;
+    product: any;
     onAddToCart: (variantId: string) => void;
 }
 

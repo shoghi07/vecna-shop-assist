@@ -5,7 +5,7 @@
  * Backend only receives {role, content} - metadata is stripped before sending
  */
 
-import { MessageRole, ProductData } from '@/lib/api';
+import { MessageRole } from '@/lib/api';
 
 export interface MessageMetadata {
     intentId: string;
@@ -33,8 +33,11 @@ export interface AssistantClarificationMessage extends BaseMessage {
 export interface AssistantRecommendationMessage extends BaseMessage {
     role: 'assistant';
     responseType: 'recommendation';
-    metadata: MessageMetadata;
-    products: ProductData[];
+    content: string;
+    primary_recommendation?: any;
+    secondary_recommendations?: any[];
+    next_page_offset?: number | null;
+    intent_id?: string;
 }
 
 export type AssistantMessage =

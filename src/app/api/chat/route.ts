@@ -2,12 +2,15 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { loadIntents } from '@/lib/orchestrator/intentRegistry';
 import { getTopProducts } from '@/lib/orchestrator/productService';
+import { SessionState, OutcomeContext, ConfidenceLevel, assessConfidence } from '@/types/session';
+import { generateOutcomeImages } from '@/lib/agents/imageGenerator';
 
 // Types
 interface ChatRequest {
     session_id: string;
     current_message: string;
     chat_history: { role: string; content: string }[];
+    intent_id?: string; // For pagination bypass
 }
 
 interface Intent {
@@ -19,12 +22,15 @@ interface Intent {
 interface GeminiResponse {
     intent_id: string;
     confidence: number;
+    confidence_level?: 'high' | 'medium' | 'low';  // New: Confidence assessment
     missing_info: string[];
     acknowledgement: string;      // New: User acknowledgement
     clarifying_question?: string; // New: If low confidence
     explanation: string;          // New: Reasoning for intent/question
     cart_action?: 'add' | 'summary' | 'place_order' | null;   // New: Cart action detection
     product_index?: number;       // New: Which product to add (0-based)
+    outcome_description?: string; // New: What user wants to achieve
+    ready_for_image_generation?: boolean; // New: High confidence + outcome clear
 }
 
 interface ClarificationResponse {
@@ -35,16 +41,18 @@ interface ClarificationResponse {
     acknowledgement: string;
     clarifying_question: string;
     explanation: string;
+    clarification_count?: number; // Phase 5: Track intent clarification attempts
 }
 
 interface RecommendationResponse {
     response_type: 'recommendation';
     intent_id: string;
     confidence: number;
-    missing_info: string[];
-    products: any[];
+    primary_recommendation?: any;
+    secondary_recommendations?: any[];
     acknowledgement: string;
     explanation: string;
+    next_page_offset?: number | null;
 }
 
 interface CartActionResponse {
@@ -81,6 +89,21 @@ interface OrderPlacedResponse {
     total: string;
     currency: string;
     acknowledgement: string;
+}
+
+interface ImageGenerationResponse {
+    response_type: 'image_generation';
+    intent_id: string;
+    outcome_description: string;
+    images: Array<{
+        url: string;
+        variant_id: string;
+        caption: string;
+        interpretation: string;
+    }>;
+    cached_products?: any[]; // Phase 4: Pre-fetched products
+    acknowledgement: string;
+    explanation: string;
 }
 
 // Helper: call Gemini for intent classification (uses cached intents)
@@ -237,17 +260,44 @@ ${recentHistory.map(m => `${m.role}: ${m.content}`).join('\n')}
 User just said:
 ${message}
 
+OUTCOME-FIRST APPROACH (CRITICAL):
+Before asking about budget/specs, first understand what RESULT/OUTCOME the user wants to achieve.
+- If they say "camera for travel", extract outcome: "capturing travel moments and memories"
+- If they say "laptop for work", extract outcome: "productive work sessions and multitasking"
+- If they say "headphones for commute", extract outcome: "peaceful commute experience"
+
+READY FOR IMAGE GENERATION:
+Set "ready_for_image_generation" to true if:
+1. You understand the DESIRED OUTCOME (what result they want to achieve)
+2. You understand the USE CASE or CONTEXT (when/where they'll use it)
+3. Confidence >= 0.6 (medium or high)
+
+Set it to false if:
+- The request is too vague ("I want to buy something")
+- No clear outcome or use case 
+- Confidence < 0.6
+
+If ready_for_image_generation is true, DO NOT ask clarifying questions. The system will show visual outcomes first.
+If false, ask ONE focused question about their intended outcome or use case.
+
+CLARIFICATION PRIORITY:
+1. First: Understand OUTCOME (what result they want)
+2. Then: Understand USE CASE (when/where/how they'll use it)
+3. Only after images: Ask about budget/specs/details
+
 Return JSON ONLY:
 {
   "intent_id": "string (one of the allowed IDs)",
   "confidence": number,
   "missing_info": string[],
   "acknowledgement": "string",
-  "clarifying_question": "string (optional, required if confidence < 0.7)",
+  "clarifying_question": "string (optional, if ready_for_image_generation is false)",
   "explanation": "string",
+  "outcome_description": "string (what result the user wants to achieve)",
+  "ready_for_image_generation": boolean,
   "cart_action": "add" | "summary" | "place_order" | null (optional),
   "product_index": number (optional, 0-based index, only for "add")
-}`;
+}`;;
 
     const requestBody = {
         contents: [
@@ -522,6 +572,213 @@ export async function POST(req: Request) {
             acknowledgement = classification.acknowledgement;
             clarifying_question = classification.clarifying_question;
             explanation = classification.explanation;
+            console.log("📊 CLASSIFICATION:", { intent_id, confidence, ready_for_image_generation: classification.ready_for_image_generation });
+
+            // PHASE 1: ENHANCED CONFIDENCE ASSESSMENT
+            const confidenceLevel = assessConfidence(confidence);
+
+            // Track session state for clarification turns
+            let sessionState: SessionState = {
+                session_id: session_id,
+                clarification_count: (body as any).clarification_count || 0,
+                current_intent_id: intent_id,
+                confidence_history: [...((body as any).confidence_history || []), confidence],
+                outcome_context: {
+                    use_case: classification.outcome_description,
+                    desired_outcome: classification.outcome_description,
+                    constraints: {}
+                }
+            };
+
+            // Max clarification turns check (3 max)
+            if (sessionState.clarification_count >= 3 && confidenceLevel.level !== 'high') {
+                // Too many clarifications - offer fallback
+                const response: ClarificationResponse = {
+                    response_type: 'clarification',
+                    intent_id,
+                    confidence,
+                    missing_info: [],
+                    acknowledgement: "I want to make sure I get this right for you.",
+                    clarifying_question: "Let me show you our popular options, or would you like to talk to a specialist?",
+                    explanation: "Maximum clarification attempts reached. Offering alternatives."
+                };
+                return NextResponse.json(response);
+            }
+
+            // PHASE 4: PARALLEL EXECUTION - Generate images + Fetch products simultaneously
+            // Trigger when ready_for_image_generation is true AND confidence is medium or high (≥0.6)
+            console.log("🔍 IMAGE CHECK:", { level: confidenceLevel.level, ready: classification.ready_for_image_generation, willTrigger: ((confidenceLevel.level === "high" || confidenceLevel.level === "medium") && classification.ready_for_image_generation) });
+            if ((confidenceLevel.level === 'high' || confidenceLevel.level === 'medium') && classification.ready_for_image_generation) {
+                try {
+                    console.log('⚡ Starting parallel execution: images + products');
+                    const startTime = Date.now();
+
+                    // Run both operations in parallel
+                    const [imagesResult, products] = await Promise.all([
+                        generateOutcomeImages(sessionState.outcome_context).catch(err => {
+                            console.error('Image generation failed:', err);
+                            return null; // Return null instead of throwing
+                        }),
+                        getTopProducts(intent_id, 0, 3).catch(err => {
+                            console.error('Product pre-fetch failed:', err);
+                            return []; // Return empty, will fetch on accept
+                        })
+                    ]);
+
+                    const elapsedMs = Date.now() - startTime;
+                    console.log(`⚡ Parallel execution completed in ${elapsedMs}ms`);
+                    console.log(`   Images: ${imagesResult ? imagesResult.length : 'FAILED'}, Products: ${products.length}`);
+
+                    // If images generated successfully, return image confirmation flow
+                    if (imagesResult && imagesResult.length > 0) {
+                        const response: ImageGenerationResponse = {
+                            response_type: 'image_generation',
+                            intent_id,
+                            outcome_description: sessionState.outcome_context.desired_outcome || intent_id,
+                            images: imagesResult,
+                            cached_products: products, // Phase 4: Cache products for instant display
+                            acknowledgement: "I've visualized your outcome in 3 ways. Which best represents what you're looking for?",
+                            explanation: `These images show different perspectives of your goal: ${sessionState.outcome_context.desired_outcome}`
+                        };
+
+                        console.log(`🎨 Generated ${imagesResult.length} outcome images with ${products.length} cached products`);
+                        return NextResponse.json(response);
+                    } else {
+                        // Image generation failed - fall through to product recommendations
+                        console.warn('⚠️  Image generation unavailable, showing products directly');
+                        // Continue to product recommendations below
+                    }
+
+                } catch (error) {
+                    console.error('Parallel execution failed:', error);
+                    // Fall through to product recommendations
+                }
+            }
+
+            // PHASE 4: HANDLE IMAGE ACCEPTANCE - Use cached products for instant display
+            if ((body as any).action === 'accept_image') {
+                const selectedVariant = (body as any).selected_variant;
+                let cachedProducts = (body as any).cached_products || [];
+                console.log(`✅ User accepted variant ${selectedVariant}`);
+                if (cachedProducts.length === 0) {
+                    // Cached products not available - fetch now
+                    console.log('⏱️  No cached products, fetching now...');
+                    const topProducts = await getTopProducts(intent_id, 0, 3);
+                    cachedProducts = topProducts;
+                }
+                // Generate presentation using cached products
+                const presentation = await generatePresentation(
+                    intent_id,
+                    current_message,
+                    cachedProducts,
+                    0
+                );
+                const response: RecommendationResponse = {
+                    response_type: 'recommendation',
+                    intent_id,
+                    confidence,
+                    primary_recommendation: presentation.primary,
+                    secondary_recommendations: presentation.secondary,
+                    acknowledgement: "Perfect! Here are products that match this outcome.",
+                    explanation: presentation.acknowledgement,
+                    next_page_offset: cachedProducts.length === 3 ? 3 : null
+                };
+                console.log('⚡ Products ready instantly (used cache)');
+                return NextResponse.json(response);
+            }
+
+            // PHASE 5: HANDLE IMAGE REJECTION/REFINEMENT - Intent Clarification
+            if ((body as any).action === 'reject_images' || (body as any).action === 'refine_images') {
+                const clarificationCount = (body as any).clarification_count || 0;
+                const actionType = (body as any).action === 'reject_images' ? 'rejected' : 'wants to refine';
+                console.log(`📝 User ${actionType} images (attempt ${clarificationCount + 1})`);
+                // Check max clarification attempts
+                if (clarificationCount >= 2) {
+                    console.log('⚠️ Max clarification attempts reached');
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: [],
+                        acknowledgement: "I'm having trouble understanding your needs visually.",
+                        clarifying_question: "Would you like to describe what you're looking for in detail, or should I show you product options directly?",
+                        explanation: "Maximum clarification attempts reached.",
+                        clarification_count: clarificationCount
+                    };
+                    return NextResponse.json(response);
+                }
+                // Ask LLM to generate clarifying question about THE INTENT
+                const currentOutcome = classification.outcome_description || intent_id;
+                const useCase = (sessionState.outcome_context?.use_case || '');
+                const clarificationPrompt = `
+            The user ${actionType} the visual representations of their intended outcome.
+            Current understanding:
+            - Intent: ${intent_id}
+            - Outcome: ${currentOutcome}
+            - Use case: ${useCase}
+            The user's actual intent may differ from our current understanding. Generate a targeted clarifying question to better understand:
+            1. What specific outcome/result they actually want to achieve
+            2. The exact context or scenario they have in mind  
+            3. Any misunderstanding about their use case or requirements
+            Focus on understanding their INTENT and CONTEXT better, not visual preferences.
+            Examples of good questions:
+            - "Are you using this professionally or personally?"
+            - "What specific scenario do you have in mind?"
+            - "Is this for indoor or outdoor use?"
+            - "Are you looking for portability or high performance?"
+            - "Will this be for daily use or special occasions?"
+            Generate a natural, conversational clarifying question that will help us understand their true intent.
+            `;
+                try {
+                    // Use existing classification endpoint to get clarifying question
+                    const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+                    const clarificationResponse = await fetch(
+                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{
+                                    parts: [{ text: clarificationPrompt }]
+                                }],
+                                generationConfig: {
+                                    temperature: 0.7,
+                                    maxOutputTokens: 150
+                                }
+                            })
+                        }
+                    );
+                    const data = await clarificationResponse.json();
+                    const clarifyingQuestion = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+                        "Can you tell me more about what you're looking for and how you plan to use it?";
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: ['intent_context', 'use_case_details'],
+                        acknowledgement: "Let me understand better what you're looking for.",
+                        clarifying_question: clarifyingQuestion,
+                        explanation: "Refining understanding of user's actual intent.",
+                        clarification_count: clarificationCount + 1
+                    };
+                    console.log(`💬 Clarifying question: "${clarifyingQuestion}"`);
+                    return NextResponse.json(response);
+                } catch (error) {
+                    console.error('Failed to generate clarifying question:', error);
+                    // Fallback clarifying question
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: ['intent_details'],
+                        acknowledgement: "Let me make sure I understand correctly.",
+                        clarifying_question: "Can you describe in more detail what you're looking for and how you plan to use it?",
+                        explanation: "Clarifying user intent.",
+                        clarification_count: clarificationCount + 1
+                    };
+                    return NextResponse.json(response);
+                }
+            }
 
             // CART ACTION DETECTION: Handle before clarification/recommendation
             if (classification.cart_action === 'add' && typeof classification.product_index === 'number') {

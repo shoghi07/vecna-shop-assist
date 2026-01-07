@@ -43,6 +43,11 @@ export function VoiceMode() {
     const [isMounted, setIsMounted] = useState(false);
     const [currentResponse, setCurrentResponse] = useState<any>(null); // Store full backend response
     const [cartItems, setCartItems] = useState<Array<{ variantId: string, title: string }>>([]);
+    const [imageConfirmationPhase, setImageConfirmationPhase] = useState(false);
+    const [generatedImages, setGeneratedImages] = useState<any[]>([]);
+    const [selectedImageVariant, setSelectedImageVariant] = useState<string | null>(null);
+    const [cachedProducts, setCachedProducts] = useState<any[]>([]); // Phase 4: Store pre-fetched products
+    const [clarificationCount, setClarificationCount] = useState(0); // Phase 5: Track intent clarification attempts
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -183,6 +188,25 @@ export function VoiceMode() {
                 return;
             }
 
+            // PHASE 3: Handle image generation response
+            if (response.response_type === 'image_generation') {
+                setGeneratedImages(response.images);
+                setImageConfirmationPhase(true);
+
+                // Phase 4: Store cached products if provided
+                if ((response as any).cached_products) {
+                    setCachedProducts((response as any).cached_products);
+                    console.log('⚡ Cached products stored:', (response as any).cached_products.length);
+                }
+
+                // Speak the acknowledgement
+                await playTTS(response.acknowledgement);
+
+                setAgentState(null);
+                setIsProcessing(false);
+                return;
+            }
+
             // Add assistant message to history
             const assistantMessage = response.response_type === 'clarification'
                 ? response.clarifying_question
@@ -253,6 +277,123 @@ export function VoiceMode() {
             setIsProcessing(false);
             toast.error('Voice generation failed');
         }
+    };
+
+    // PHASE 3: Handle image selection (accept, refine, reject)
+    const handleImageSelection = async (
+        action: 'accept' | 'refine' | 'reject',
+        variantId?: string | null
+    ) => {
+        setIsProcessing(true);
+        if (action === 'accept' && variantId) {
+            // User accepted - proceed to products
+            try {
+                const response = await sendMessageToBackend({
+                    session_id: sessionId,
+                    current_message: `I selected variant ${variantId}`,
+                    chat_history: chatHistory,
+                    action: 'accept_image',
+                    selected_variant: variantId,
+                    cached_products: cachedProducts, // Phase 4: Send pre-fetched products
+                    last_products: [],
+                    cart_items: cartItems.map(item => ({
+                        variant_id: item.variantId,
+                        title: item.title,
+                        quantity: 1
+                    })),
+                    address: DEFAULT_DELIVERY_ADDRESS
+                } as any);
+                if (response.response_type === 'recommendation') {
+                    // Show products!
+                    setCurrentResponse(response);
+                    setImageConfirmationPhase(false);
+                    setSelectedImageVariant(null);
+                    // Phase 4: Clear cached products after use
+                    setCachedProducts([]);
+
+                    // Phase 5: Reset clarification count on success
+                    setClarificationCount(0);
+                    // Speak confirmation
+                    await playTTS("Perfect! Here are products that match this outcome.");
+                    // Add to history
+                    setChatHistory([
+                        ...chatHistory,
+                        { role: 'assistant', content: response.acknowledgement }
+                    ]);
+                }
+            } catch (error) {
+                console.error('Image acceptance failed:', error);
+                toast.error('Failed to load products. Please try again.');
+            }
+        }
+        if (action === 'refine') {
+            // Phase 5: User wants more specific intent clarification
+            setImageConfirmationPhase(false);
+            setIsProcessing(true);
+            
+            try {
+                const response = await sendMessageToBackend({
+                    session_id: sessionId,
+                    current_message: "I need more specific options",
+                    chat_history: chatHistory,
+                    action: 'refine_images',
+                    clarification_count: clarificationCount,
+                    last_products: [],
+                    cart_items: cartItems.map(item => ({
+                        variant_id: item.variantId,
+                        title: item.title,
+                        quantity: 1
+                    })),
+                    address: DEFAULT_DELIVERY_ADDRESS
+                } as any);
+                
+                if (response.response_type === 'clarification') {
+                    await playTTS(response.clarifying_question);
+                    setClarificationCount(response.clarification_count || clarificationCount + 1);
+                }
+            } catch (error) {
+                console.error('Refine handling failed:', error);
+                toast.error('Failed to process refinement. Please try again.');
+            }
+            
+            setSelectedImageVariant(null);
+        }
+        if (action === 'reject') {
+            // Phase 5: User's intent isn't captured - ask clarifying question
+            setImageConfirmationPhase(false);
+            setIsProcessing(true);
+            
+            try {
+                const response = await sendMessageToBackend({
+                    session_id: sessionId,
+                    current_message: "These don't match what I'm looking for",
+                    chat_history: chatHistory,
+                    action: 'reject_images',
+                    clarification_count: clarificationCount,
+                    last_products: [],
+                    cart_items: cartItems.map(item => ({
+                        variant_id: item.variantId,
+                        title: item.title,
+                        quantity: 1
+                    })),
+                    address: DEFAULT_DELIVERY_ADDRESS
+                } as any);
+                
+                if (response.response_type === 'clarification') {
+                    await playTTS(response.clarifying_question);
+                    setClarificationCount(response.clarification_count || clarificationCount + 1);
+                    // Clear cache for fresh start
+                    setCachedProducts([]);
+                }
+            } catch (error) {
+                console.error('Reject handling failed:', error);
+                toast.error('Failed to process feedback. Please try again.');
+            }
+            
+            setSelectedImageVariant(null);
+        }
+        setAgentState(null);
+        setIsProcessing(false);
     };
 
     const handleOrbTap = () => {
@@ -427,6 +568,72 @@ export function VoiceMode() {
                     </div>
                 </div>
             )}
+
+            {/* PHASE 3: Image Confirmation Modal */}
+            {
+                imageConfirmationPhase && generatedImages.length > 0 && (
+                    <div className="fixed inset-0 bg-black/95 z-50 flex items-center justify-center p-4 sm:p-8">
+                        <div className="max-w-6xl w-full">
+                            {/* Header */}
+                            <div className="text-center mb-8">
+                                <h2 className="text-3xl font-bold text-white mb-2">
+                                    Which visual matches your goal?
+                                </h2>
+                                <p className="text-gray-400">
+                                    Select the one that best represents what you want to achieve
+                                </p>
+                            </div>
+                            {/* Image Grid */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                                {generatedImages.map((img) => (
+                                    <div
+                                        key={img.variant_id}
+                                        className={`cursor-pointer rounded-lg overflow-hidden transition-all ${selectedImageVariant === img.variant_id
+                                            ? 'ring-4 ring-blue-500 scale-105 shadow-2xl'
+                                            : 'hover:scale-102 hover:ring-2 ring-white/20'
+                                            }`}
+                                        onClick={() => setSelectedImageVariant(img.variant_id)}
+                                    >
+                                        <img
+                                            src={img.url}
+                                            alt={img.caption}
+                                            className="w-full aspect-square object-cover bg-gray-800"
+                                        />
+                                        <div className="bg-gray-900 p-4">
+                                            <p className="text-white font-medium mb-1">{img.caption}</p>
+                                            <p className="text-gray-400 text-sm">{img.interpretation}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            {/* Actions */}
+                            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                                <button
+                                    onClick={() => handleImageSelection('accept', selectedImageVariant)}
+                                    disabled={!selectedImageVariant || isProcessing}
+                                    className="px-8 py-3 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-700 transition"
+                                >
+                                    ✓ This one!
+                                </button>
+                                <button
+                                    onClick={() => handleImageSelection('refine')}
+                                    disabled={isProcessing}
+                                    className="px-8 py-3 bg-gray-700 text-white rounded-lg font-medium hover:bg-gray-600 transition"
+                                >
+                                    🔄 Adjust these
+                                </button>
+                                <button
+                                    onClick={() => handleImageSelection('reject')}
+                                    disabled={isProcessing}
+                                    className="px-8 py-3 bg-gray-700 text-white rounded-lg font-medium hover:bg-gray-600 transition"
+                                >
+                                    ❌ None of these
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
 
             {/* Floating Checkout Button - Shows when cart has items */}
             {cartItems.length > 0 && (

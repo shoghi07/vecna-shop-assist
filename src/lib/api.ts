@@ -98,7 +98,22 @@ export interface OrderPlacedResponse {
     acknowledgement: string;
 }
 
-export type BackendResponse = ClarificationResponse | RecommendationResponse | CartActionResponse | CartSummaryResponse | OrderPlacedResponse;
+export interface ImageGenerationResponse {
+    response_type: 'image_generation';
+    intent_id: string;
+    outcome_description: string;
+    images: Array<{
+        url: string;
+        variant_id: string;
+        caption: string;
+        interpretation: string;
+    }>;
+    cached_products?: any[]; // Phase 4: Pre-fetched products
+    acknowledgement: string;
+    explanation: string;
+}
+
+export type BackendResponse = ClarificationResponse | RecommendationResponse | CartActionResponse | CartSummaryResponse | OrderPlacedResponse | ImageGenerationResponse;
 
 // ============================================================================
 // REQUEST VALIDATION (Prevent Malformed Requests)
