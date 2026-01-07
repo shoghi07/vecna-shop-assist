@@ -266,16 +266,22 @@ Before asking about budget/specs, first understand what RESULT/OUTCOME the user 
 - If they say "laptop for work", extract outcome: "productive work sessions and multitasking"
 - If they say "headphones for commute", extract outcome: "peaceful commute experience"
 
-READY FOR IMAGE GENERATION:
-Set "ready_for_image_generation" to true if:
-1. You understand the DESIRED OUTCOME (what result they want to achieve)
-2. You understand the USE CASE or CONTEXT (when/where they'll use it)
-3. Confidence >= 0.6 (medium or high)
+READY FOR IMAGE GENERATION (IMPORTANT):
+Set "ready_for_image_generation" to TRUE if ANY of these:
+1. Clear PRODUCT TYPE (camera, laptop, etc.) + ANY context OR
+2. Confidence >= 0.5 OR
+3. You understand WHAT they want (outcome) even if vague
 
-Set it to false if:
-- The request is too vague ("I want to buy something")
-- No clear outcome or use case 
-- Confidence < 0.6
+Set FALSE only if:
+- Extremely vague ("I want something") with NO product type
+- Confidence < 0.4
+
+EXAMPLES - ready_for_image_generation: TRUE:
+- "camera for my kid" ✅
+- "waterproof camera" ✅  
+- "gaming laptop" ✅
+
+DO NOT ask clarifying questions if TRUE - show images first!
 
 If ready_for_image_generation is true, DO NOT ask clarifying questions. The system will show visual outcomes first.
 If false, ask ONE focused question about their intended outcome or use case.
@@ -666,6 +672,22 @@ export async function POST(req: Request) {
                     const topProducts = await getTopProducts(intent_id, 0, 3);
                     cachedProducts = topProducts;
                 }
+
+                // If STILL no products, return guidance/clarification instead of empty recommendation
+                if (cachedProducts.length === 0) {
+                    console.log('⚠️ No products found for intent:', intent_id);
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: [],
+                        acknowledgement: "I see what you're looking for, but I couldn't find exact matches in our current catalog.",
+                        clarifying_question: "To help me find the best alternative, could you tell me which feature matters most to you: portability, professional quality, or ease of use?",
+                        explanation: "No direct product matches found for this visual intent."
+                    };
+                    return NextResponse.json(response);
+                }
+
                 // Generate presentation using cached products
                 const presentation = await generatePresentation(
                     intent_id,
