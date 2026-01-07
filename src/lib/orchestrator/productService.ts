@@ -13,6 +13,8 @@ export interface EnrichedProduct {
 
 // Fetch top products for a given intent, enriched with scores.
 export async function getTopProducts(intentId: string, offset = 0, limit = 3): Promise<EnrichedProduct[]> {
+    console.log(`🔍 Fetching products for intent: "${intentId}", offset: ${offset}, limit: ${limit}`);
+
     // Get scores
     const { data: scores, error } = await supabase
         .from('product_intent_scores')
@@ -20,7 +22,13 @@ export async function getTopProducts(intentId: string, offset = 0, limit = 3): P
         .eq('intent_id', intentId)
         .order('fit_score', { ascending: false })
         .range(offset, offset + limit - 1); // Pagination: inclusive range
-    if (error) throw new Error('Failed to fetch product scores');
+
+    if (error) {
+        console.error('❌ Error fetching product scores:', error);
+        throw new Error('Failed to fetch product scores');
+    }
+
+    console.log(`📊 Found ${scores?.length || 0} product scores for intent "${intentId}":`, scores);
 
     const productIds = (scores as any).map((s: any) => s.product_id);
 

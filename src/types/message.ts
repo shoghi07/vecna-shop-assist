@@ -13,6 +13,9 @@ export interface MessageMetadata {
     missingInfo: string[];
 }
 
+// Chat history type for conversation tracking
+export type ChatHistory = Array<{ role: 'user' | 'assistant'; content: string }>;
+
 export interface BaseMessage {
     id: string;
     role: MessageRole;

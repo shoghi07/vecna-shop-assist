@@ -25,7 +25,7 @@ interface RecommendationMessageProps {
 }
 
 export function RecommendationMessage({ message, onAddToCart, onLoadMore }: RecommendationMessageProps) {
-    const { primary_recommendation, secondary_recommendations = [], next_page_offset, intentId } = message;
+    const { primary_recommendation, secondary_recommendations = [], next_page_offset, intent_id } = message;
 
     return (
         <div className="flex flex-col gap-6 mb-8 w-full max-w-3xl">
@@ -128,12 +128,12 @@ export function RecommendationMessage({ message, onAddToCart, onLoadMore }: Reco
             )}
 
             {/* LOAD MORE */}
-            {next_page_offset !== null && next_page_offset !== undefined && onLoadMore && intentId && (
+            {next_page_offset !== null && next_page_offset !== undefined && onLoadMore && intent_id && (
                 <div className="flex justify-center mt-2">
                     <Button
                         data-testid="load-more-button"
                         variant="ghost"
-                        onClick={() => onLoadMore(intentId, next_page_offset)}
+                        onClick={() => onLoadMore(intent_id, next_page_offset)}
                         className="text-muted-foreground hover:text-primary gap-2"
                     >
                         Show more results <ChevronRight className="w-4 h-4" />
