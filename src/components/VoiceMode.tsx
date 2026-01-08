@@ -26,6 +26,8 @@ import { transcribeAudio, isAudioRecordingSupported, initElevenLabs } from '@/li
 import { config } from '@/config';
 import { toast } from 'sonner';
 import { sendMessageToBackend, addToShopifyCart } from '@/lib/api';
+import CheckoutModal from './CheckoutModal';
+import { ShoppingBag } from 'lucide-react';
 import type { ChatHistory } from '@/types/message';
 import { X, Mic, MicOff, Keyboard, RefreshCcw, RotateCw, ArrowRight } from 'lucide-react';
 
@@ -69,6 +71,19 @@ export function VoiceMode() {
     const audioChunksRef = useRef<Blob[]>([]);
     const audioRef = useRef<HTMLAudioElement | null>(null);
 
+    // Calculate total quantity for badge
+    const cartQuantity = cartItems.reduce((acc, item) => acc + item.quantity, 0);
+
+
+    const handleOrderSuccess = async (orderId: string) => {
+        setCartItems([]);
+        setLastOrderId(orderId);
+        setIsCheckoutOpen(false);
+        toast.success(`Order placed! ID: ${orderId}`);
+        await playTTS(`Your order has been placed successfully! Order ID is ${orderId}. Check your email for the invoice.`);
+    };
+
+
     useEffect(() => {
         setIsMounted(true);
         if (config.elevenlabs.apiKey) {
@@ -86,12 +101,25 @@ export function VoiceMode() {
     // Business logic methods (preserved from original)
     const handleAddToCart = async (variantId: string, productTitle: string) => {
         try {
-            await addToShopifyCart(variantId);
-            setCartItems([...cartItems, { variantId, title: productTitle }]);
-            toast.success(`Added ${productTitle} to cart!`);
+            // Try Shopify add (non-blocking)
+            addToShopifyCart(product.variant_id || product.variantId).catch(err =>
+                console.warn('Shopify add failed, proceeding with local cart:', err)
+            );
+
+            setCartItems(prev => [
+                ...prev,
+                {
+                    id: product.variant_id || product.variantId,
+                    title: product.title,
+                    price: product.price || "$0.00",
+                    quantity: 1,
+                    image_url: product.image_url || ""
+                }
+            ]);
+            toast.success(`Added ${product.title} to cart!`);
         } catch (error) {
-            console.error('Add to cart error:', error);
-            toast.error('Failed to add to cart. Please try again.');
+            console.error('Local cart error:', error);
+            toast.error('Failed to add to cart.');
         }
     };
 
@@ -175,7 +203,7 @@ export function VoiceMode() {
                 cart_items: cartItems.map(item => ({
                     variant_id: item.variantId,
                     title: item.title,
-                    quantity: 1
+                    quantity: item.quantity
                 })),
                 address: DEFAULT_DELIVERY_ADDRESS
             } as any);
@@ -326,9 +354,9 @@ export function VoiceMode() {
                     cached_products: cachedProducts,
                     last_products: [],
                     cart_items: cartItems.map(item => ({
-                        variant_id: item.variantId,
+                        variant_id: item.id,
                         title: item.title,
-                        quantity: 1
+                        quantity: item.quantity
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
@@ -351,7 +379,8 @@ export function VoiceMode() {
                     setSelectedImageVariant(null);
 
                     // Speak guidance: Combine acknowledgement + question
-                    const ttsMessage = `${response.acknowledgement} ${response.clarifying_question}`;
+                    const ack = (response as any).acknowledgement || '';
+                    const ttsMessage = `${ack} ${response.clarifying_question}`;
                     await playTTS(ttsMessage);
                     // Add to history
                     setChatHistory([
@@ -377,9 +406,9 @@ export function VoiceMode() {
                     clarification_count: clarificationCount,
                     last_products: [],
                     cart_items: cartItems.map(item => ({
-                        variant_id: item.variantId,
+                        variant_id: item.id,
                         title: item.title,
-                        quantity: 1
+                        quantity: item.quantity
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
@@ -387,7 +416,7 @@ export function VoiceMode() {
                 if (response.response_type === 'clarification') {
                     setAgentMessage(response.clarifying_question);
                     await playTTS(response.clarifying_question);
-                    setClarificationCount(response.clarification_count || clarificationCount + 1);
+                    setClarificationCount((response as any).clarification_count || clarificationCount + 1);
                 }
             } catch (error) {
                 console.error('Refine handling failed:', error);
@@ -409,9 +438,9 @@ export function VoiceMode() {
                     clarification_count: clarificationCount,
                     last_products: [],
                     cart_items: cartItems.map(item => ({
-                        variant_id: item.variantId,
+                        variant_id: item.id,
                         title: item.title,
-                        quantity: 1
+                        quantity: item.quantity
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);

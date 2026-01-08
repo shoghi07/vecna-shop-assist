@@ -4,6 +4,25 @@ import { loadIntents } from '@/lib/orchestrator/intentRegistry';
 import { getTopProducts } from '@/lib/orchestrator/productService';
 import { SessionState, OutcomeContext, ConfidenceLevel, assessConfidence } from '@/types/session';
 import { generateOutcomeImages } from '@/lib/agents/imageGenerator';
+import {
+    ConversationState,
+    initConversationState,
+    advanceTurn,
+    updatePersona,
+    incrementClarificationAttempts,
+    shouldSwitchStrategy,
+    getProductCountForPersona
+} from '@/lib/orchestrator/conversationState';
+import {
+    inferPersona,
+    getQuestionStyleForPersona,
+    getDecisionFrameForPersona,
+    getPersonaDisplayName
+} from '@/lib/orchestrator/personaInference';
+import { getDecisionFrame } from '@/lib/orchestrator/tradeoffGenerator';
+import { getRelevantAddons, generateAddonMessage, generatePaymentModeQuestion } from '@/lib/orchestrator/addonSuggestions';
+import { handleNoProductScenario } from '@/lib/orchestrator/noProductHandler';
+import { loadIntentsWithDescriptions, validateIntentMatch, quickSemanticCheck } from '@/lib/orchestrator/semanticIntentMatcher';
 
 // Types
 interface ChatRequest {
@@ -13,7 +32,7 @@ interface ChatRequest {
     intent_id?: string; // For pagination bypass
 }
 
-interface Intent {
+export interface Intent {
     intent_id: string;
     name: string;
     description: string | null;
@@ -50,6 +69,7 @@ interface RecommendationResponse {
     confidence: number;
     primary_recommendation?: any;
     secondary_recommendations?: any[];
+    decision_frame?: string; // Aarav Phase 3: Persona-specific framing before products
     acknowledgement: string;
     explanation: string;
     next_page_offset?: number | null;
@@ -62,6 +82,16 @@ interface CartActionResponse {
     variant_id: string;
     product_title: string;
     acknowledgement: string;
+    // Aarav Phase 5: Add-on suggestions
+    suggested_addons?: Array<{
+        product_id: string;
+        title: string;
+        price: string;
+        image_url: string;
+        variant_id: string;
+        reason: string;
+    }>;
+    addon_message?: string;
 }
 
 interface CartSummaryResponse {
@@ -104,6 +134,46 @@ interface ImageGenerationResponse {
     cached_products?: any[]; // Phase 4: Pre-fetched products
     acknowledgement: string;
     explanation: string;
+    inferred_persona?: string | null; // Aarav Phase 1: Pass persona to frontend
+}
+
+// ============================================================================
+// AARAV: Helper Functions for Greeting & Acknowledgment
+// ============================================================================
+
+/**
+ * Generate Aarav's greeting for first turn
+ */
+function generateGreeting(isReturningUser: boolean): string {
+    if (isReturningUser) {
+        return "I see you've shopped with us before. How may I assist you today?";
+    }
+    return "Hello! I'm Aarav from Ladani Store. How are you today?";
+}
+
+/**
+ * Generate input acknowledgment (always prepend to responses)
+ * This shows Aarav is listening and understanding, not just responding mechanically
+ */
+function generateAcknowledgment(userMessage: string, intentId: string | null): string {
+    // Extract key intent signals for more personalized acknowledgment
+    const lowerMessage = userMessage.toLowerCase();
+
+    if (lowerMessage.includes('wedding') || lowerMessage.includes('birthday') || lowerMessage.includes('event')) {
+        return "I understand this is for a special occasion.";
+    }
+    if (lowerMessage.includes('budget') || lowerMessage.includes('affordable') || lowerMessage.includes('cheap')) {
+        return "I hear you're looking for the best value within your budget.";
+    }
+    if (lowerMessage.includes('beginner') || lowerMessage.includes('learn') || lowerMessage.includes('start')) {
+        return "Great that you're getting started with photography!";
+    }
+    if (lowerMessage.includes('travel') || lowerMessage.includes('trip')) {
+        return "Sounds like you want to capture your travel memories.";
+    }
+
+    // Generic but warm acknowledgment
+    return "I understand what you're looking for.";
 }
 
 // Helper: call Gemini for intent classification (uses cached intents)
@@ -557,6 +627,29 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
         }
 
+        // ============================================================================
+        // AARAV PHASE 1: CONVERSATION STATE & PERSONA TRACKING
+        // ============================================================================
+
+        // Initialize or retrieve conversation state
+        const isFirstTurn = !chat_history || chat_history.length === 0;
+        const turnCount = Math.floor(chat_history?.length / 2) || 0; // Rough turn approximation
+
+        // Infer persona from current message and history
+        const currentPersona = (body as any).inferred_persona || null;
+        const inferredPersona = inferPersona(current_message, chat_history || [], currentPersona);
+
+        if (inferredPersona && inferredPersona !== currentPersona) {
+            console.log(`🎭 Persona: ${getPersonaDisplayName(inferredPersona)}`);
+        }
+
+        // Generate greeting for first turn
+        let greetingPrefix = '';
+        if (isFirstTurn) {
+            const isReturningUser = false; // TODO: Detect from database/session history
+            greetingPrefix = generateGreeting(isReturningUser) + ' ';
+        }
+
         let intent_id: string;
         let confidence: number;
         let missing_info: string[] = [];
@@ -580,6 +673,41 @@ export async function POST(req: Request) {
             explanation = classification.explanation;
             console.log("📊 CLASSIFICATION:", { intent_id, confidence, ready_for_image_generation: classification.ready_for_image_generation });
 
+            // SEMANTIC VALIDATION: Check if classified intent actually matches user's need
+            if (intent_id && confidence >= 0.5) {
+                // Quick check first (keyword-based, no LLM call)
+                const quickCheck = quickSemanticCheck(intent_id, current_message);
+
+                if (!quickCheck) {
+                    console.log(`🔍 Quick semantic check failed for "${intent_id}", validating with LLM...`);
+
+                    // Full LLM validation against all intent descriptions
+                    const intentsWithDesc = await loadIntentsWithDescriptions();
+                    const contextString = chat_history?.slice(-4).map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n') || '';
+
+                    const validation = await validateIntentMatch(
+                        intent_id,
+                        current_message,
+                        contextString,
+                        intentsWithDesc
+                    );
+
+                    if (validation.should_use_fallback) {
+                        console.log(`⚠️ Semantic mismatch: "${intent_id}" doesn't match "${validation.inferred_need}"`);
+                        console.log(`   Reason: ${validation.match_reason}`);
+                        console.log(`   → Will use dynamic capability fallback`);
+                        // Set intent_id to a marker that triggers dynamic fallback
+                        // but preserve the inferred need for capability matching
+                        (classification as any).inferred_need = validation.inferred_need;
+                        intent_id = validation.matched_intent_id || `dynamic_${validation.inferred_need.replace(/\s+/g, '_').toLowerCase()}`;
+                    } else if (validation.matched_intent_id && validation.matched_intent_id !== intent_id) {
+                        console.log(`✅ Semantic correction: "${intent_id}" → "${validation.matched_intent_id}"`);
+                        intent_id = validation.matched_intent_id;
+                        confidence = validation.confidence;
+                    }
+                }
+            }
+
             // PHASE 1: ENHANCED CONFIDENCE ASSESSMENT
             const confidenceLevel = assessConfidence(confidence);
 
@@ -596,19 +724,73 @@ export async function POST(req: Request) {
                 }
             };
 
-            // Max clarification turns check (3 max)
+            // AARAV PHASE 2: STRATEGY SWITCHING - Max clarification turns check (3 max)
+            // After 3 attempts, SWITCH STRATEGY: show products instead of asking more questions
             if (sessionState.clarification_count >= 3 && confidenceLevel.level !== 'high') {
-                // Too many clarifications - offer fallback
-                const response: ClarificationResponse = {
-                    response_type: 'clarification',
-                    intent_id,
-                    confidence,
-                    missing_info: [],
-                    acknowledgement: "I want to make sure I get this right for you.",
-                    clarifying_question: "Let me show you our popular options, or would you like to talk to a specialist?",
-                    explanation: "Maximum clarification attempts reached. Offering alternatives."
-                };
-                return NextResponse.json(response);
+                console.log('⚠️ Max clarification attempts reached (3), switching to product-first strategy');
+
+                // Strategy switch: Fetch and show products based on best-guess intent
+                try {
+                    const topProducts = await getTopProducts(intent_id, 0, getProductCountForPersona(inferredPersona), current_message);
+
+                    if (topProducts.length > 0) {
+                        // Show products with context-aware messaging
+                        const presentation = await generatePresentation(
+                            intent_id,
+                            current_message,
+                            topProducts,
+                            0
+                        );
+
+                        const personaMessage = inferredPersona === 'delegator'
+                            ? "Let me show you what I think will work best."
+                            : "Based on what you've shared, here are my top recommendations.";
+
+                        const response: RecommendationResponse = {
+                            response_type: 'recommendation',
+                            intent_id,
+                            confidence,
+                            primary_recommendation: presentation.primary,
+                            secondary_recommendations: presentation.secondary,
+                            decision_frame: getDecisionFrame(inferredPersona, intent_id),
+                            acknowledgement: greetingPrefix + generateAcknowledgment(current_message, intent_id) + ` ${personaMessage}`,
+                            explanation: presentation.acknowledgement,
+                            next_page_offset: topProducts.length === 3 ? 3 : null
+                        };
+                        console.log(`✅ Strategy switch successful: Showing ${topProducts.length} products`);
+                        return NextResponse.json(response);
+                    } else {
+                        // PHASE 6: Graceful no-product handling
+                        console.log('⚠️ No products available, using graceful decline');
+                        const noProductResult = await handleNoProductScenario(intent_id, current_message, inferredPersona);
+
+                        const response: ClarificationResponse = {
+                            response_type: 'clarification',
+                            intent_id,
+                            confidence,
+                            missing_info: [],
+                            acknowledgement: greetingPrefix + noProductResult.message,
+                            clarifying_question: noProductResult.has_alternatives
+                                ? "Would you like to see these alternatives, or would you prefer to speak with a specialist?"
+                                : "Would you like to browse our popular products, or speak with a specialist?",
+                            explanation: "No direct product matches. Alternatives: " + (noProductResult.alternatives?.length || 0)
+                        };
+                        return NextResponse.json(response);
+                    }
+                } catch (error) {
+                    console.error('Strategy switch failed:', error);
+                    // Fallback to specialist offer
+                    const response: ClarificationResponse = {
+                        response_type: 'clarification',
+                        intent_id,
+                        confidence,
+                        missing_info: [],
+                        acknowledgement: "I want to make sure I get this right for you.",
+                        clarifying_question: "Let me show you our popular options, or would you like to talk to a specialist?",
+                        explanation: "Maximum clarification attempts reached."
+                    };
+                    return NextResponse.json(response);
+                }
             }
 
             // PHASE 4: PARALLEL EXECUTION - Generate images + Fetch products simultaneously
@@ -625,7 +807,7 @@ export async function POST(req: Request) {
                             console.error('Image generation failed:', err);
                             return null; // Return null instead of throwing
                         }),
-                        getTopProducts(intent_id, 0, 3).catch(err => {
+                        getTopProducts(intent_id, 0, 3, current_message).catch(err => {
                             console.error('Product pre-fetch failed:', err);
                             return []; // Return empty, will fetch on accept
                         })
@@ -643,8 +825,9 @@ export async function POST(req: Request) {
                             outcome_description: sessionState.outcome_context.desired_outcome || intent_id,
                             images: imagesResult,
                             cached_products: products, // Phase 4: Cache products for instant display
-                            acknowledgement: "I've visualized your outcome in 3 ways. Which best represents what you're looking for?",
-                            explanation: `These images show different perspectives of your goal: ${sessionState.outcome_context.desired_outcome}`
+                            acknowledgement: greetingPrefix + generateAcknowledgment(current_message, intent_id) + " I've visualized your outcome in 3 ways. Which best represents what you're looking for?",
+                            explanation: `These images show different perspectives of your goal: ${sessionState.outcome_context.desired_outcome}`,
+                            inferred_persona: inferredPersona // Pass persona to frontend
                         };
 
                         console.log(`🎨 Generated ${imagesResult.length} outcome images with ${products.length} cached products`);
@@ -669,7 +852,7 @@ export async function POST(req: Request) {
                 if (cachedProducts.length === 0) {
                     // Cached products not available - fetch now
                     console.log('⏱️  No cached products, fetching now...');
-                    const topProducts = await getTopProducts(intent_id, 0, 3);
+                    const topProducts = await getTopProducts(intent_id, 0, 3, current_message);
                     cachedProducts = topProducts;
                 }
 
@@ -681,7 +864,7 @@ export async function POST(req: Request) {
                         intent_id,
                         confidence,
                         missing_info: [],
-                        acknowledgement: "I see what you're looking for, but I couldn't find exact matches in our current catalog.",
+                        acknowledgement: greetingPrefix + generateAcknowledgment(current_message, intent_id) + " I couldn't find exact matches in our current catalog.",
                         clarifying_question: "To help me find the best alternative, could you tell me which feature matters most to you: portability, professional quality, or ease of use?",
                         explanation: "No direct product matches found for this visual intent."
                     };
@@ -701,7 +884,8 @@ export async function POST(req: Request) {
                     confidence,
                     primary_recommendation: presentation.primary,
                     secondary_recommendations: presentation.secondary,
-                    acknowledgement: "Perfect! Here are products that match this outcome.",
+                    decision_frame: getDecisionFrame(inferredPersona, intent_id),
+                    acknowledgement: greetingPrefix + generateAcknowledgment(current_message, intent_id) + " Perfect! Here are products that match this outcome.",
                     explanation: presentation.acknowledgement,
                     next_page_offset: cachedProducts.length === 3 ? 3 : null
                 };
@@ -764,7 +948,7 @@ export async function POST(req: Request) {
                                     parts: [{ text: clarificationPrompt }]
                                 }],
                                 generationConfig: {
-                                    temperature: 0.7,
+                                    temperature: 1.0,
                                     maxOutputTokens: 150
                                 }
                             })
@@ -811,14 +995,22 @@ export async function POST(req: Request) {
 
                 if (lastProducts && lastProducts[classification.product_index]) {
                     const productToAdd = lastProducts[classification.product_index];
+
+                    // Phase 5: Fetch relevant add-ons
+                    const addons = await getRelevantAddons(productToAdd.product_id, intent_id, 2);
+                    const addonMessage = generateAddonMessage(addons);
+
                     const cartResponse: CartActionResponse = {
                         response_type: 'cart_action',
                         action: 'add',
                         product_id: productToAdd.product_id,
                         variant_id: productToAdd.variant_id,
                         product_title: productToAdd.title,
-                        acknowledgement: acknowledgement || `Added ${productToAdd.title} to your cart!`,
+                        acknowledgement: generateAcknowledgment(current_message, intent_id) + ` Added ${productToAdd.title} to your cart!`,
+                        suggested_addons: addons.length > 0 ? addons : undefined,
+                        addon_message: addonMessage || undefined
                     };
+                    console.log(`🛒 Added to cart: ${productToAdd.title}, Add-ons: ${addons.length}`);
                     return NextResponse.json(cartResponse);
                 } else {
                     // No products in context - ask for clarification
@@ -930,7 +1122,7 @@ export async function POST(req: Request) {
                         order_number: order.order_number || order.name || draftOrder.id,
                         total: order.total_price || draftOrder.total_price,
                         currency: 'INR',
-                        acknowledgement: acknowledgement || `Order placed successfully! Your order #${order.order_number || draftOrder.id} will arrive soon.`
+                        acknowledgement: generateAcknowledgment(current_message, intent_id) + ` Order placed successfully! Your order #${order.order_number || draftOrder.id} will arrive soon.`
                     };
                     return NextResponse.json(orderResponse);
                 } catch (error) {
@@ -964,7 +1156,7 @@ export async function POST(req: Request) {
         }
 
         // 3. Recommendation flow (Deterministic + Presentation)
-        const topProducts = await getTopProducts(intent_id, offset, 3);
+        const topProducts = await getTopProducts(intent_id, offset, 3, current_message);
 
         if (topProducts.length === 0) {
             const response: ClarificationResponse = {
@@ -988,6 +1180,7 @@ export async function POST(req: Request) {
             confidence,
             primary_recommendation: offset === 0 ? presentation.primary : undefined,
             secondary_recommendations: offset === 0 ? presentation.secondary : [presentation.primary, ...presentation.secondary].filter(Boolean),
+            decision_frame: getDecisionFrame(inferredPersona, intent_id),
             acknowledgement: presentation.acknowledgement,
             explanation: explanation || '', // Add explanation from classification
             next_page_offset: topProducts.length === 3 ? offset + 3 : null,
