@@ -22,12 +22,15 @@ export async function getCapabilityKeys(): Promise<string[]> {
     try {
         const { data, error } = await supabase
             .from('capability_dimensions')
-            .select('capability_key'); // Column name is 'capability_key' in the database
+            .select('key'); // Assuming the column is named 'key' or 'dimension_key'. 
+        // Standardizing on 'key' based on typically Supabase conventions or User's "product_capabilities" table use of "capability_key"
 
         if (error) throw error;
 
         if (data) {
-            cachedCapabilityKeys = data.map((d: any) => d.capability_key).filter((k: string) => !!k);
+            cachedCapabilityKeys = data.map((d: any) => d.key || d.dimension_key || d.name); // Fallback for column name safety
+            // Filter out undefineds
+            cachedCapabilityKeys = cachedCapabilityKeys!.filter(k => !!k);
         }
 
         return cachedCapabilityKeys || [];

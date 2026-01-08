@@ -558,187 +558,182 @@ export function VoiceMode() {
     }
 
     return (
-        <div className="voice-ui-wrapper">
-            <div className="voice-content-card">
-                {/* Close button - top right */}
-                <button
-                    className="voice-close-btn"
-                    onClick={() => window.history.back()}
-                    aria-label="Close"
-                >
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                </button>
-
-                {/* Cart button in top right */}
+        <div className="flex flex-col h-screen bg-background overflow-hidden">
+            {/* Top Right Controls */}
+            <div className="absolute top-4 right-4 z-50 flex gap-2">
+                {/* Cart Button */}
                 {cartQuantity > 0 && (
                     <button
                         onClick={() => setIsCheckoutOpen(true)}
-                        className="absolute top-4 right-16 z-50 p-3 bg-white/20 hover:bg-white/30 backdrop-blur-md border border-white/30 rounded-full transition-all"
+                        className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 rounded-full transition-all animate-in zoom-in spin-in-12 duration-300 relative group"
                         title="View Cart & Checkout"
                     >
-                        <ShoppingBag className="w-5 h-5" />
-                        <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">
+                        <ShoppingBag className="w-5 h-5 text-white" />
+                        <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-purple-500 text-[10px] font-bold text-white shadow-lg pointer-events-none">
                             {cartQuantity}
                         </span>
+                        <div className="absolute top-full right-0 mt-2 px-2 py-1 bg-black/80 text-xs text-white rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                            Checkout
+                        </div>
                     </button>
                 )}
 
-                {/* Main Content */}
-                <div className="flex-1 flex flex-col items-center justify-center px-6">
-                    {/* Show sparkle icon only when no conversation started */}
-                    {chatHistory.length === 0 && (
-                        <div className="mb-6 fade-in" style={{ animationDelay: '0.2s' }}>
-                            <svg width="47" height="45" viewBox="0 0 47 45" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ opacity: 0.9 }}>
-                                <path d="M23.306 0L26.3765 17.1628L43.5393 14.0923L26.3765 17.1628L29.447 34.3256L26.3765 17.1628L9.21367 14.0923L26.3765 17.1628L23.306 0Z" fill="black" />
-                                <path d="M9.21367 20.233L11.2489 31.2551L22.271 29.2198L11.2489 31.2551L13.2841 42.2772L11.2489 31.2551L0.226807 29.2198L11.2489 31.2551L9.21367 20.233Z" fill="black" />
-                                <path d="M36.3633 20.233L38.3985 31.2551L46.8516 29.5318L38.3985 31.2551L40.1218 42.2772L38.3985 31.2551L29.9454 29.5318L38.3985 31.2551L36.3633 20.233Z" fill="black" />
-                            </svg>
-                        </div>
-                    )}
+                {/* Existing Controls (if any, typically settings or close) */}
+            </div>
 
-                    {/* Greeting text - only show when no conversation */}
-                    {chatHistory.length === 0 && (
-                        <div className="text-center mb-8 fade-in-delay">
-                            <h2 className="text-3xl font-semibold mb-2" style={{ color: '#1a1a1a' }}>
-                                How can I help<br />you today?
-                            </h2>
-                        </div>
-                    )}
+            {/* Main Content */}
+            <div className="flex-shrink-0 flex flex-col items-center justify-center p-8 pt-12">
+                {/* Orb Container */}
+                <div
+                    className="w-80 h-80 cursor-pointer transition-transform hover:scale-105 active:scale-95"
+                    onClick={handleOrbTap}
+                >
+                    <Orb
+                        agentState={agentState}
+                        colors={["#3B82F6", "#8B5CF6"]} // Blue to purple gradient
+                        volumeMode="auto"
+                    />
+                </div>
 
-                    {/* Orb Container */}
-                    <div
-                        className="w-80 h-80 cursor-pointer transition-transform hover:scale-105 active:scale-95"
-                        onClick={handleOrbTap}
-                    >
-                        <Orb
-                            agentState={agentState}
-                            colors={["#3B82F6", "#8B5CF6"]} // Blue to purple gradient
-                            volumeMode="auto"
-                        />
+                {/* Status Text */}
+                <div className="mt-6 text-center">
+                    <p className="text-lg font-medium">
+                        {isRecording && "Listening..."}
+                        {agentState === 'thinking' && "Thinking..."}
+                        {agentState === 'talking' && "Speaking..."}
+                        {!isRecording && !isProcessing && "Tap to speak"}
+                    </p>
+                    {chatHistory.length > 0 && (
+                        <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                            {chatHistory[chatHistory.length - 1].content.substring(0, 80)}
+                            {chatHistory[chatHistory.length - 1].content.length > 80 && '...'}
+                        </p>
+                    )}
+                </div>
+
+                {/* Helper Text */}
+                {chatHistory.length === 0 && (
+                    <div className="mt-4 text-center text-sm text-muted-foreground max-w-md">
+                        <p>Tap the orb and start speaking.</p>
+                        <p className="mt-1">Tap again when you're done.</p>
                     </div>
+                )}
+            </div>
 
-                    {/* Status Text */}
-                    <div className="mt-8 text-center">
-                        {chatHistory.length === 0 ? (
-                            <div className="space-y-3">
-                                <p className="text-base text-gray-600">
-                                    Tap the orb and start speaking
+            {/* Product Recommendations Section */}
+            {currentResponse && currentResponse.response_type === 'recommendation' && (
+                <div className="flex-1 overflow-y-auto px-4 pb-8">
+                    <div className="max-w-4xl mx-auto space-y-6">
+                        {/* Acknowledgement */}
+                        <div className="text-center">
+                            <p className="text-muted-foreground italic">
+                                "{currentResponse.acknowledgement}"
+                            </p>
+                        </div>
+
+                        {/* AARAV: Decision Frame - Persona-specific context before products */}
+                        {currentResponse.decision_frame && (
+                            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 mb-4 border border-blue-100">
+                                <p className="text-blue-800 font-medium text-center">
+                                    💡 {currentResponse.decision_frame}
                                 </p>
-                                <p className="text-sm text-gray-500">
-                                    Tap again when you're done
+                            </div>
+                        )}
+
+                        {/* Product Recommendations */}
+                        {!currentResponse.primary_recommendation ? (
+                            <div className="flex flex-col items-center justify-center p-8 text-center bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                                <span className="text-4xl mb-4">🔍</span>
+                                <h3 className="text-lg font-medium text-gray-900 mb-2">No matching products found</h3>
+                                <p className="text-gray-500 max-w-sm">
+                                    I've confirmed your visual preference, but I couldn't find exact products in our catalog for this specific intent yet.
                                 </p>
                             </div>
                         ) : (
-                            <>
-                                <p className="text-lg font-medium mb-3">
-                                    {isRecording && "Listening..."}
-                                    {agentState === 'thinking' && "Thinking..."}
-                                    {agentState === 'talking' && "Speaking..."}
-                                    {!isRecording && !isProcessing && "Tap to speak"}
-                                </p>
-                                {/* Last message preview in capsule style */}
-                                <div className="transcript-capsule max-w-md mx-auto">
-                                    {chatHistory[chatHistory.length - 1].content.substring(0, 100)}
-                                    {chatHistory[chatHistory.length - 1].content.length > 100 && '...'}
-                                </div>
-                            </>
-                        )}
-                    </div>
-                </div>
-
-                {/* Product Recommendations Section */}
-                {currentResponse && currentResponse.response_type === 'recommendation' && (
-                    <div className="flex-1 overflow-y-auto px-4 pb-8">
-                        <div className="max-w-4xl mx-auto space-y-6">
-                            {/* Acknowledgement */}
-                            <div className="text-center mb-4">
-                                <p className="text-gray-700 italic text-sm">
-                                    "{currentResponse.acknowledgement}"
-                                </p>
-                            </div>
-
-                            {/* AARAV: Decision Frame - Persona-specific context before products */}
-                            {currentResponse.decision_frame && (
-                                <div className="bg-blue-50/60 backdrop-blur-sm rounded-2xl p-4 mb-6 border border-blue-200/50">
-                                    <p className="text-blue-900 font-medium text-center text-sm">
-                                        💡 {currentResponse.decision_frame}
-                                    </p>
-                                </div>
-                            )}
-
-                            {/* Product Recommendations - Horizontal Carousel */}
-                            {!currentResponse.primary_recommendation ? (
-                                <div className="voice-empty-state py-12">
-                                    <span className="text-4xl mb-4">🔍</span>
-                                    <h3 className="text-lg font-medium text-gray-900 mb-2">No matching products found</h3>
-                                    <p className="text-gray-500 max-w-sm text-sm">
-                                        I've confirmed your visual preference, but I couldn't find exact products in our catalog for this specific intent yet.
-                                    </p>
-                                </div>
-                            ) : (
-                                <div className="product-carousel mb-6">
-                                    {/* Primary Recommendation */}
-                                    <div className="product-card" style={{ animationDelay: '0.1s' }}>
-                                        <div className="absolute top-3 left-3 bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full">
-                                            Best Match
-                                        </div>
+                            <div className="bg-white rounded-xl shadow-sm border border-border p-4 mb-4 transform transition-all hover:scale-[1.01]">
+                                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                                    Best Match
+                                </h4>
+                                <div className="flex gap-4">
+                                    <div className="relative w-32 h-32 flex-shrink-0 bg-gray-50 rounded-lg overflow-hidden border">
                                         <img
                                             src={currentResponse.primary_recommendation.image_url}
                                             alt={currentResponse.primary_recommendation.title}
-                                            className="w-full h-48 object-contain bg-white rounded-xl mb-3 p-4"
+                                            className="w-full h-full object-contain p-2"
                                         />
-                                        <h3 className="product-card-title line-clamp-2">
-                                            {currentResponse.primary_recommendation.title}
-                                        </h3>
-                                        <p className="product-card-price mb-3">
-                                            {currentResponse.primary_recommendation.price}
+                                    </div>
+                                    <div className="flex-1">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <h3 className="font-semibold text-lg leading-tight">
+                                                {currentResponse.primary_recommendation.title}
+                                            </h3>
+                                            <span className="text-primary font-bold text-xl ml-4">
+                                                {currentResponse.primary_recommendation.price}
+                                            </span>
+                                        </div>
+                                        <p className="text-sm text-muted-foreground mb-3">
+                                            {currentResponse.primary_recommendation.description}
                                         </p>
                                         {currentResponse.primary_recommendation.reasoning && (
-                                            <p className="text-xs text-gray-600 italic mb-3 line-clamp-2">
+                                            <p className="text-xs text-muted-foreground italic mb-3">
                                                 {currentResponse.primary_recommendation.reasoning}
                                             </p>
                                         )}
                                         <button
-                                            className="w-full bg-gray-900 text-white py-2.5 px-4 rounded-lg font-medium hover:bg-gray-800 transition-colors"
+                                            className="w-full bg-primary text-primary-foreground py-2 px-4 rounded-md hover:bg-primary/90 transition-colors"
                                             onClick={() => handleAddToCart(currentResponse.primary_recommendation)}
                                         >
                                             Add to Cart
                                         </button>
                                     </div>
+                                </div>
+                            </div>
+                        )}
 
-                                    {/* Secondary Recommendations */}
-                                    {currentResponse.secondary_recommendations && currentResponse.secondary_recommendations.map((product: any, idx: number) => (
-                                        <div key={product.product_id} className="product-card" style={{ animationDelay: `${0.2 + idx * 0.1}s` }}>
-                                            <img
-                                                src={product.image_url}
-                                                alt={product.title}
-                                                className="w-full h-48 object-contain bg-white rounded-xl mb-3 p-4"
-                                            />
-                                            <h3 className="product-card-title line-clamp-2">
-                                                {product.title}
-                                            </h3>
-                                            <p className="product-card-price mb-4">
-                                                {product.price}
-                                            </p>
-                                            <button
-                                                className="w-full bg-gray-100 text-gray-900 py-2.5 px-4 rounded-lg font-medium hover:bg-gray-200 transition-colors"
-                                                onClick={() => handleAddToCart(product)}
-                                            >
-                                                Add to Cart
-                                            </button>
+                        {/* Secondary Recommendations */}
+                        {currentResponse.secondary_recommendations && currentResponse.secondary_recommendations.length > 0 && (
+                            <>
+                                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-center">
+                                    Other Options
+                                </h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {currentResponse.secondary_recommendations.map((product: any) => (
+                                        <div key={product.product_id} className="bg-card border rounded-lg p-4 hover:border-primary/40 transition-colors">
+                                            <div className="flex gap-3">
+                                                <div className="relative w-20 h-20 flex-shrink-0 bg-white rounded-md overflow-hidden">
+                                                    <img
+                                                        src={product.image_url}
+                                                        alt={product.title}
+                                                        className="w-full h-full object-contain"
+                                                    />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <h4 className="font-medium text-sm line-clamp-2 mb-1">
+                                                        {product.title}
+                                                    </h4>
+                                                    <p className="text-primary font-semibold mb-2">
+                                                        {product.price}
+                                                    </p>
+                                                    <button
+                                                        className="w-full bg-secondary text-secondary-foreground py-1.5 px-3 rounded text-sm hover:bg-secondary/80 transition-colors"
+                                                        onClick={() => handleAddToCart(product)}
+                                                    >
+                                                        Add to Cart
+                                                    </button>
+                                                </div>
+                                            </div>
                                         </div>
                                     ))}
                                 </div>
-                            )}
-                        </div>
+                            </>
+                        )}
                     </div>
-                )}
+                </div>
+            )}
 
-                {/* PHASE 3: Image Confirmation Modal */}
-                {imageConfirmationPhase && generatedImages.length > 0 && (
+            {/* PHASE 3: Image Confirmation Modal */}
+            {
+                imageConfirmationPhase && generatedImages.length > 0 && (
                     <div className="fixed inset-0 bg-black/95 z-50 flex items-center justify-center p-4 sm:p-8">
                         <div className="max-w-6xl w-full">
                             {/* Header */}
@@ -796,16 +791,15 @@ export function VoiceMode() {
                         </div>
                     </div>
                 )
-                }
+            }
 
-                {/* Checkout Modal */}
-                <CheckoutModal
-                    isOpen={isCheckoutOpen}
-                    onClose={() => setIsCheckoutOpen(false)}
-                    cartItems={cartItems}
-                    onOrderSuccess={handleOrderSuccess}
-                />
-            </div>
+            {/* Checkout Modal */}
+            <CheckoutModal
+                isOpen={isCheckoutOpen}
+                onClose={() => setIsCheckoutOpen(false)}
+                cartItems={cartItems}
+                onOrderSuccess={handleOrderSuccess}
+            />
         </div>
     );
 }
