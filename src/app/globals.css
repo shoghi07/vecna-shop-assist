@@ -119,7 +119,130 @@
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Voice-First UI Design Tokens */
+:root {
+  /* Gradient colors */
+  --gradient-lavender: #E6E6FA;
+  --gradient-pink: #FFB6C1;
+  --gradient-offwhite: #FAF9F6;
+
+  /* Capsule colors */
+  --capsule-border-dotted: rgba(0, 0, 0, 0.2);
+  --capsule-border-solid: rgba(0, 0, 0, 0.4);
+  --capsule-bg: rgba(255, 255, 255, 0.6);
+
+  /* Spacing */
+  --orb-size: 200px;
+  --container-padding: 24px;
+  --card-spacing: 16px;
+
+  /* Animation durations */
+  --duration-fast: 200ms;
+  --duration-medium: 400ms;
+  --duration-slow: 600ms;
+}
+
+/* Animation keyframes */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(100px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes gentlePulse {
+
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.05);
+    opacity: 0.9;
+  }
+}
+
+@keyframes breathe {
+
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+}
+
+/* Utility classes */
+.animate-fade-in-up {
+  animation: fadeInUp 600ms ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 400ms ease-out;
+}
+
+.animate-gentle-pulse {
+  animation: gentlePulse 3s ease-in-out infinite;
+}
+
+.animate-breathe {
+  animation: breathe 2s ease-in-out infinite;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+
+@keyframes wave {
+
+  0%,
+  100% {
+    transform: scaleY(0.5);
+  }
+
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-wave {
+  animation-name: wave;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
 }

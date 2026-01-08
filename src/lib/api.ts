@@ -188,8 +188,8 @@ export async function sendMessageToBackend(
                 data.response_type !== 'cart_summary' &&
                 data.response_type !== 'order_placed' &&
                 data.response_type !== 'image_generation')) {
-            console.error('Invalid response_type received:', data.response_type, data);
-            throw new Error('Invalid response_type from backend');
+            console.error('Invalid response from backend:', data);
+            throw new Error(`Invalid response_type from backend: ${data.response_type || 'undefined'}`);
         }
 
         return data as BackendResponse;
