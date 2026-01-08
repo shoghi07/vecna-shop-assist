@@ -22,14 +22,12 @@ export async function getCapabilityKeys(): Promise<string[]> {
     try {
         const { data, error } = await supabase
             .from('capability_dimensions')
-            .select('capability_key');
+            .select('capability_key'); // Column name is 'capability_key' in the database
 
         if (error) throw error;
 
         if (data) {
-            cachedCapabilityKeys = data.map((d: any) => d.capability_key);
-            // Filter out undefineds
-            cachedCapabilityKeys = cachedCapabilityKeys!.filter(k => !!k);
+            cachedCapabilityKeys = data.map((d: any) => d.capability_key).filter((k: string) => !!k);
         }
 
         return cachedCapabilityKeys || [];
