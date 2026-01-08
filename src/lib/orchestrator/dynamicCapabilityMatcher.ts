@@ -8,37 +8,38 @@
 import { supabase } from '@/lib/supabase';
 
 // All available capability keys from the database
-export const CAPABILITY_KEYS = [
-    'video_image_quality',
-    'low_light',
-    'autofocus_reliability',
-    'subject_tracking',
-    'burst_performance',
-    'stabilization_quality',
-    'frame_rate_flexibility',
-    'battery_life',
-    'heat_management',
-    'continuous_recording_support',
-    'audio_input_support',
-    'audio_monitoring_support',
-    'ease_of_use',
-    'portability',
-    'durability_weather_resistance',
-    'mobile_app_workflow',
-    'streaming_webcam_support',
-    'mounting_expandability',
-    'capture_mode_flexibility',
-    'video_quality',
-    'motion_detection',
-    'reliability',
-    'storage_support',
-    'video_stability',
-    'durability',
-    'frame_rate',
-    'lighting_support',
-    'audio_quality',
-    'compatibility'
-];
+// Cache for capability keys
+let cachedCapabilityKeys: string[] | null = null;
+
+/**
+ * Fetch capability keys from the database (with simple caching)
+ */
+export async function getCapabilityKeys(): Promise<string[]> {
+    if (cachedCapabilityKeys && cachedCapabilityKeys.length > 0) {
+        return cachedCapabilityKeys;
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('capability_dimensions')
+            .select('key'); // Assuming the column is named 'key' or 'dimension_key'. 
+        // Standardizing on 'key' based on typically Supabase conventions or User's "product_capabilities" table use of "capability_key"
+
+        if (error) throw error;
+
+        if (data) {
+            cachedCapabilityKeys = data.map((d: any) => d.key || d.dimension_key || d.name); // Fallback for column name safety
+            // Filter out undefineds
+            cachedCapabilityKeys = cachedCapabilityKeys!.filter(k => !!k);
+        }
+
+        return cachedCapabilityKeys || [];
+    } catch (err) {
+        console.error("Failed to fetch capability keys:", err);
+        // Fallback to essential keys if DB fails
+        return ['low_light_performance', 'video_quality', 'autofocus_reliability', 'battery_life', 'portability'];
+    }
+}
 
 export interface CapabilityWeight {
     capability_key: string;
@@ -62,6 +63,7 @@ export async function inferCapabilitiesForIntent(
     userMessage: string
 ): Promise<CapabilityWeight[]> {
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+    const availableKeys = await getCapabilityKeys();
 
     const prompt = `You are a camera product expert. Given a user's intent, identify the most important camera capabilities.
 
@@ -69,7 +71,7 @@ User Intent: "${intentDescription}"
 User Message: "${userMessage}"
 
 Available capability keys (pick 3-5 most relevant):
-${CAPABILITY_KEYS.map(k => `- ${k}`).join('\n')}
+${availableKeys.map(k => `- ${k}`).join('\n')}
 
 For each selected capability, assign a weight (0.5 to 1.0) based on importance.
 

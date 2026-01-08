@@ -23,6 +23,8 @@ import { getDecisionFrame } from '@/lib/orchestrator/tradeoffGenerator';
 import { getRelevantAddons, generateAddonMessage, generatePaymentModeQuestion } from '@/lib/orchestrator/addonSuggestions';
 import { handleNoProductScenario } from '@/lib/orchestrator/noProductHandler';
 import { loadIntentsWithDescriptions, validateIntentMatch, quickSemanticCheck } from '@/lib/orchestrator/semanticIntentMatcher';
+import { dynamicProductSearch, getCapabilityKeys } from '@/lib/orchestrator/dynamicCapabilityMatcher';
+import { generateClosingConnection } from '@/lib/orchestrator/postCheckout';
 
 // Types
 interface ChatRequest {
@@ -50,6 +52,8 @@ interface GeminiResponse {
     product_index?: number;       // New: Which product to add (0-based)
     outcome_description?: string; // New: What user wants to achieve
     ready_for_image_generation?: boolean; // New: High confidence + outcome clear
+    intent_status?: 'initial' | 'refined' | 'switched' | 'unknown_capability';
+    post_checkout_chat?: boolean;
 }
 
 interface ClarificationResponse {
@@ -182,6 +186,7 @@ async function classifyIntent(message: string, history: { role: string; content:
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`;
 
     const intents = await loadIntents();
+    const capabilityKeys = await getCapabilityKeys();
     // Limit history to last 10 messages to prevent token limits/confusion
     const recentHistory = history.slice(-10);
 
@@ -361,18 +366,36 @@ CLARIFICATION PRIORITY:
 2. Then: Understand USE CASE (when/where/how they'll use it)
 3. Only after images: Ask about budget/specs/details
 
+MID-FLOW CHANGES & UNKNOWN INTENTS:
+- "intent_status":
+  - "refined": User adds constraints to CURRENT intent (e.g. "make it blue"). Merge with current intent.
+  - "switched": User changes topic (e.g. "actually show me laptops"). Treat as NEW primary intent.
+  - "val-ambiguous": Unclear if switch or refine. ASK clarifying question.
+  - "unknown_capability": User wants a valid product but it DOES NOT match "Allowed Intents".
+    - In this case, map their needs to "Capability Keys" below.
+    - Ask questions to define which capabilities matter (e.g. "Indoor or outdoor?").
+    - Once you know the capabilities, set "ready_for_image_generation": true.
+
+CAPABILITY KEYS (for unknown_capability):
+${capabilityKeys.join(', ')}
+
+POST CHECKOUT:
+- Set "post_checkout_chat": true if user says "I bought it", "Just placed order", or confirms purchase.
+
 Return JSON ONLY:
 {
-  "intent_id": "string (one of the allowed IDs)",
+  "intent_id": "string (allowed ID OR 'unknown')",
   "confidence": number,
   "missing_info": string[],
   "acknowledgement": "string",
-  "clarifying_question": "string (optional, if ready_for_image_generation is false)",
+  "clarifying_question": "string (optional)",
   "explanation": "string",
   "outcome_description": "string (what result the user wants to achieve)",
   "ready_for_image_generation": boolean,
   "cart_action": "add" | "summary" | "place_order" | null (optional),
-  "product_index": number (optional, 0-based index, only for "add")
+  "product_index": number (optional, 0-based index, only for "add"),
+  "intent_status": "initial" | "refined" | "switched" | "unknown_capability",
+  "post_checkout_chat": boolean
 }`;;
 
     const requestBody = {
@@ -657,23 +680,79 @@ export async function POST(req: Request) {
         let clarifying_question: string | undefined = "";
         let explanation: string | undefined = "";
 
-        // 1. Determine Intent
+        // 1. Determine Intent & Post-Checkout
         if (body.intent_id) {
-            // Bypass mode (Pagination/Load More)
+            // Bypass mode
             intent_id = body.intent_id;
-            confidence = 1.0; // Assume valid if client is requesting more
+            confidence = 1.0;
         } else {
-            // Standard classification (Aarav)
+            // Standard classification
             const classification = await classifyIntent(current_message, chat_history);
+
+            // --- POST CHECKOUT HANDLING ---
+            if (classification.post_checkout_chat) {
+                console.log('🎉 Post-checkout conversation detected');
+                const closingMessage = await generateClosingConnection('ORDER-LATEST', chat_history, inferredPersona);
+                return NextResponse.json({
+                    response_type: 'clarification', // Use clarification type to just show text
+                    intent_id: 'post_checkout',
+                    confidence: 1.0,
+                    missing_info: [],
+                    acknowledgement: closingMessage,
+                    clarifying_question: "",
+                    explanation: "Transaction complete."
+                });
+            }
+
             intent_id = classification.intent_id;
             confidence = classification.confidence;
             missing_info = classification.missing_info;
             acknowledgement = classification.acknowledgement;
             clarifying_question = classification.clarifying_question;
             explanation = classification.explanation;
-            console.log("📊 CLASSIFICATION:", { intent_id, confidence, ready_for_image_generation: classification.ready_for_image_generation });
 
-            // SEMANTIC VALIDATION: Check if classified intent actually matches user's need
+            console.log("📊 CLASSIFICATION:", {
+                intent_id,
+                confidence,
+                status: classification.intent_status,
+                ready: classification.ready_for_image_generation
+            });
+
+            // --- UNKNOWN INTENT / DYNAMIC CAPABILITY HANDLING ---
+            if (classification.intent_status === 'unknown_capability') {
+                if (classification.ready_for_image_generation) {
+                    // We have enough info to run a capability search
+                    console.log('🔄 Running Dynamic Capability Search...');
+                    const dynProducts = await dynamicProductSearch(
+                        classification.outcome_description || current_message,
+                        current_message,
+                        3
+                    );
+
+                    if (dynProducts.length > 0) {
+                        // Build recommendation response
+                        const presentation = await generatePresentation(
+                            'dynamic_capability',
+                            current_message,
+                            dynProducts,
+                            0
+                        );
+                        return NextResponse.json({
+                            response_type: 'recommendation',
+                            intent_id: 'dynamic_capability',
+                            confidence: 0.8,
+                            primary_recommendation: presentation.primary,
+                            secondary_recommendations: presentation.secondary,
+                            acknowledgement: greetingPrefix + (acknowledgement || "I found these based on your requirements."),
+                            explanation: "Selected based on capability match: " + (classification.outcome_description || "your needs"),
+                            next_page_offset: null
+                        });
+                    }
+                }
+                // If not ready, fall through to standard flow which will return 'clarifying_question' from classification
+            }
+
+            // SEMANTIC VALIDATION (Existing logic)
             if (intent_id && confidence >= 0.5) {
                 // Quick check first (keyword-based, no LLM call)
                 const quickCheck = quickSemanticCheck(intent_id, current_message);
