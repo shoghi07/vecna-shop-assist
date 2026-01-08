@@ -19,6 +19,8 @@ import { transcribeAudio, isAudioRecordingSupported, initElevenLabs } from '@/li
 import { config } from '@/config';
 import { toast } from 'sonner';
 import { sendMessageToBackend, addToShopifyCart } from '@/lib/api';
+import CheckoutModal from './CheckoutModal';
+import { ShoppingBag } from 'lucide-react';
 import type { ChatHistory } from '@/types/message';
 
 // Default delivery address for orders
@@ -42,15 +44,30 @@ export function VoiceMode() {
     const [chatHistory, setChatHistory] = useState<ChatHistory>([]);
     const [isMounted, setIsMounted] = useState(false);
     const [currentResponse, setCurrentResponse] = useState<any>(null); // Store full backend response
-    const [cartItems, setCartItems] = useState<Array<{ variantId: string, title: string }>>([]);
+    const [cartItems, setCartItems] = useState<Array<{ id: string, title: string, price: string, quantity: number, image_url: string }>>([]);
     const [imageConfirmationPhase, setImageConfirmationPhase] = useState(false);
     const [generatedImages, setGeneratedImages] = useState<any[]>([]);
     const [selectedImageVariant, setSelectedImageVariant] = useState<string | null>(null);
     const [cachedProducts, setCachedProducts] = useState<any[]>([]); // Phase 4: Store pre-fetched products
     const [clarificationCount, setClarificationCount] = useState(0); // Phase 5: Track intent clarification attempts
+    const [isCheckoutOpen, setIsCheckoutOpen] = useState(false); // Dummy Checkout State
+    const [lastOrderId, setLastOrderId] = useState<string | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioRef = useRef<HTMLAudioElement | null>(null);
+
+    // Calculate total quantity for badge
+    const cartQuantity = cartItems.reduce((acc, item) => acc + item.quantity, 0);
+
+
+    const handleOrderSuccess = async (orderId: string) => {
+        setCartItems([]);
+        setLastOrderId(orderId);
+        setIsCheckoutOpen(false);
+        toast.success(`Order placed! ID: ${orderId}`);
+        await playTTS(`Your order has been placed successfully! Order ID is ${orderId}. Check your email for the invoice.`);
+    };
+
 
     useEffect(() => {
         // Mark as mounted to prevent hydration mismatch
@@ -62,14 +79,27 @@ export function VoiceMode() {
         }
     }, []);
 
-    const handleAddToCart = async (variantId: string, productTitle: string) => {
+    const handleAddToCart = async (product: any) => {
         try {
-            await addToShopifyCart(variantId);
-            setCartItems([...cartItems, { variantId, title: productTitle }]);
-            toast.success(`Added ${productTitle} to cart!`);
+            // Try Shopify add (non-blocking)
+            addToShopifyCart(product.variant_id || product.variantId).catch(err =>
+                console.warn('Shopify add failed, proceeding with local cart:', err)
+            );
+
+            setCartItems(prev => [
+                ...prev,
+                {
+                    id: product.variant_id || product.variantId,
+                    title: product.title,
+                    price: product.price || "$0.00",
+                    quantity: 1,
+                    image_url: product.image_url || ""
+                }
+            ]);
+            toast.success(`Added ${product.title} to cart!`);
         } catch (error) {
-            console.error('Add to cart error:', error);
-            toast.error('Failed to add to cart. Please try again.');
+            console.error('Local cart error:', error);
+            toast.error('Failed to add to cart.');
         }
     };
 
@@ -144,35 +174,52 @@ export function VoiceMode() {
                 chat_history: newHistory,
                 last_products: lastProducts, // Send product context for voice cart commands
                 cart_items: cartItems.map(item => ({ // Send cart for summary/order placement
-                    variant_id: item.variantId,
+                    variant_id: item.id,
                     title: item.title,
-                    quantity: 1
+                    quantity: item.quantity
                 })),
                 address: DEFAULT_DELIVERY_ADDRESS // Send default address for order placement
             } as any);
 
             // Handle cart action response
-            if (response.response_type === 'cart_action') {
-                // Auto-add to cart
-                await handleAddToCart(response.variant_id, response.product_title);
+            const respAny = response as any;
+            if (respAny.cart_action) {
+                if (respAny.cart_action === 'add') {
+                    const productIndex = respAny.product_index ?? 0;
 
-                // Play confirmation TTS (includes add-on message if available)
-                let ttsMessage = response.acknowledgement;
-                const addonMessage = (response as any).addon_message;
-                if (addonMessage) {
-                    ttsMessage += ' ' + addonMessage;
+                    // Determine which product to add from context
+                    const productToAdd = response.response_type === 'recommendation'
+                        ? (productIndex === 0 ? response.primary_recommendation : response.secondary_recommendations?.[productIndex - 1])
+                        : cachedProducts[productIndex];
+
+                    const possibleProducts = [
+                        ...cachedProducts,
+                        (response as any).primary_recommendation,
+                        ...((response as any).secondary_recommendations || [])
+                    ].filter(Boolean);
+
+                    const targetProduct = productToAdd || possibleProducts
+                        .find((p: any) => p && (p.variant_id === respAny.variant_id || p.id === respAny.variant_id));
+
+                    if (targetProduct) {
+                        await handleAddToCart(targetProduct);
+                    } else {
+                        await handleAddToCart({
+                            variantId: respAny.variant_id,
+                            title: respAny.product_title || "Unknown Product",
+                            price: "$0.00",
+                            image_url: ""
+                        });
+                    }
+
+                    // Speak acknowledgement
+                    let ttsMessage = (response as any).acknowledgement;
+                    if (respAny.addon_message) ttsMessage += ' ' + respAny.addon_message;
+                    await playTTS(ttsMessage);
+
+                } else if (respAny.cart_action === 'place_order' || respAny.cart_action === 'summary') {
+                    setIsCheckoutOpen(true);
                 }
-                await playTTS(ttsMessage);
-
-                // Log add-ons for future UI display
-                const suggestedAddons = (response as any).suggested_addons;
-                if (suggestedAddons && suggestedAddons.length > 0) {
-                    console.log('🛒 Add-on suggestions:', suggestedAddons);
-                }
-
-                setAgentState(null);
-                setIsProcessing(false);
-                return;
             }
 
             // Handle cart summary response
@@ -313,9 +360,9 @@ export function VoiceMode() {
                     cached_products: cachedProducts, // Phase 4: Send pre-fetched products
                     last_products: [],
                     cart_items: cartItems.map(item => ({
-                        variant_id: item.variantId,
+                        variant_id: item.id,
                         title: item.title,
-                        quantity: 1
+                        quantity: item.quantity
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
@@ -371,9 +418,9 @@ export function VoiceMode() {
                     clarification_count: clarificationCount,
                     last_products: [],
                     cart_items: cartItems.map(item => ({
-                        variant_id: item.variantId,
+                        variant_id: item.id,
                         title: item.title,
-                        quantity: 1
+                        quantity: item.quantity
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
@@ -403,9 +450,9 @@ export function VoiceMode() {
                     clarification_count: clarificationCount,
                     last_products: [],
                     cart_items: cartItems.map(item => ({
-                        variant_id: item.variantId,
+                        variant_id: item.id,
                         title: item.title,
-                        quantity: 1
+                        quantity: item.quantity
                     })),
                     address: DEFAULT_DELIVERY_ADDRESS
                 } as any);
@@ -464,7 +511,29 @@ export function VoiceMode() {
 
     return (
         <div className="flex flex-col h-screen bg-background overflow-hidden">
-            {/* Main Content - Orb and Status */}
+            {/* Top Right Controls */}
+            <div className="absolute top-4 right-4 z-50 flex gap-2">
+                {/* Cart Button */}
+                {cartQuantity > 0 && (
+                    <button
+                        onClick={() => setIsCheckoutOpen(true)}
+                        className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 rounded-full transition-all animate-in zoom-in spin-in-12 duration-300 relative group"
+                        title="View Cart & Checkout"
+                    >
+                        <ShoppingBag className="w-5 h-5 text-white" />
+                        <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-purple-500 text-[10px] font-bold text-white shadow-lg pointer-events-none">
+                            {cartQuantity}
+                        </span>
+                        <div className="absolute top-full right-0 mt-2 px-2 py-1 bg-black/80 text-xs text-white rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                            Checkout
+                        </div>
+                    </button>
+                )}
+
+                {/* Existing Controls (if any, typically settings or close) */}
+            </div>
+
+            {/* Main Content */}
             <div className="flex-shrink-0 flex flex-col items-center justify-center p-8 pt-12">
                 {/* Orb Container */}
                 <div
@@ -564,10 +633,7 @@ export function VoiceMode() {
                                         )}
                                         <button
                                             className="w-full bg-primary text-primary-foreground py-2 px-4 rounded-md hover:bg-primary/90 transition-colors"
-                                            onClick={() => handleAddToCart(
-                                                currentResponse.primary_recommendation.variant_id,
-                                                currentResponse.primary_recommendation.title
-                                            )}
+                                            onClick={() => handleAddToCart(currentResponse.primary_recommendation)}
                                         >
                                             Add to Cart
                                         </button>
@@ -602,10 +668,7 @@ export function VoiceMode() {
                                                     </p>
                                                     <button
                                                         className="w-full bg-secondary text-secondary-foreground py-1.5 px-3 rounded text-sm hover:bg-secondary/80 transition-colors"
-                                                        onClick={() => handleAddToCart(
-                                                            product.variant_id,
-                                                            product.title
-                                                        )}
+                                                        onClick={() => handleAddToCart(product)}
                                                     >
                                                         Add to Cart
                                                     </button>
@@ -686,34 +749,13 @@ export function VoiceMode() {
                 )
             }
 
-            {/* Floating Checkout Button - Shows when cart has items */}
-            {cartItems.length > 0 && (
-                <div className="fixed bottom-8 right-8 z-50">
-                    <button
-                        onClick={() => window.location.href = `https://${config.shopify.storeDomain}/cart`}
-                        className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6 py-3 rounded-lg shadow-lg transition-all flex items-center gap-2"
-                    >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-                        </svg>
-                        Checkout ({cartItems.length})
-                    </button>
-                </div>
-            )}
-
-            {/* Floating Cart Counter - Top right */}
-            {cartItems.length > 0 && (
-                <div className="fixed top-4 right-4 z-50 bg-card border-2 border-primary rounded-full p-2 shadow-lg">
-                    <div className="relative">
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
-                        </svg>
-                        <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                            {cartItems.length}
-                        </span>
-                    </div>
-                </div>
-            )}
+            {/* Checkout Modal */}
+            <CheckoutModal
+                isOpen={isCheckoutOpen}
+                onClose={() => setIsCheckoutOpen(false)}
+                cartItems={cartItems}
+                onOrderSuccess={handleOrderSuccess}
+            />
         </div>
     );
 }
