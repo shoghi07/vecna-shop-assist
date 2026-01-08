@@ -37,6 +37,17 @@ export async function getTopProducts(
     }
 
     console.log(`📊 Found ${scores?.length || 0} product scores for intent "${intentId}"`);
+    if (scores && scores.length > 0) {
+        const productIdCounts = new Map<string, number>();
+        (scores as any[]).forEach((s: any) => {
+            productIdCounts.set(s.product_id, (productIdCounts.get(s.product_id) || 0) + 1);
+        });
+        const duplicates = Array.from(productIdCounts.entries()).filter(([_, count]) => count > 1);
+        if (duplicates.length > 0) {
+            console.log(`⚠️ Found ${duplicates.length} duplicate product_ids in scores:`, duplicates.map(([id, count]) => `${id} (${count}x)`));
+        }
+        console.log(`📋 Unique products in scores: ${productIdCounts.size}, Total score entries: ${scores.length}`);
+    }
 
     // Step 2: If no products found, try DYNAMIC CAPABILITY FALLBACK
     if (!scores || scores.length === 0) {
@@ -76,7 +87,28 @@ export async function getTopProducts(
     }
 
     // Step 3: Intent-based products found - fetch details
-    const productIds = (scores as any).map((s: any) => s.product_id);
+    // Deduplicate product_ids while preserving order and highest score
+    const uniqueScores = new Map<string, { product_id: string; fit_score: number; score_breakdown: any }>();
+    for (const score of scores as any[]) {
+        const existing = uniqueScores.get(score.product_id);
+        // Keep the entry with the highest fit_score if duplicate
+        if (!existing || score.fit_score > existing.fit_score) {
+            uniqueScores.set(score.product_id, {
+                product_id: score.product_id,
+                fit_score: score.fit_score,
+                score_breakdown: score.score_breakdown
+            });
+        }
+    }
+    
+    // Convert to array preserving order (highest scores first)
+    const uniqueScoreArray = Array.from(uniqueScores.values())
+        .sort((a, b) => b.fit_score - a.fit_score)
+        .slice(0, limit); // Ensure we don't exceed limit after deduplication
+    
+    const productIds = uniqueScoreArray.map(s => s.product_id);
+    
+    console.log(`📦 Deduplicated to ${productIds.length} unique products from ${scores.length} score entries`);
 
     const { data: products, error: prodErr } = await supabase
         .from('products_raw')
@@ -84,27 +116,37 @@ export async function getTopProducts(
         .in('id', productIds);
     if (prodErr) throw new Error('Failed to fetch product details');
 
-    // Merge
-    return productIds.map((id: string) => {
-        const prod = (products as any).find((p: any) => p.id === id);
-        const score = (scores as any).find((s: any) => s.product_id === id);
+    // Create a map for O(1) lookup
+    const productsMap = new Map((products as any[] || []).map((p: any) => [p.id, p]));
 
-        // Robust extraction for Shopify-like schema
-        const price = prod.variants?.[0]?.price || "N/A";
-        const image_url = prod.images?.[0]?.src || "";
-        const variant_id = prod.variants?.[0]?.id?.toString() || prod.variants?.[0]?.variant_id?.toString();
-        const highlights: string[] = [];
+    // Merge in the correct order (by fit_score)
+    return uniqueScoreArray
+        .map((score) => {
+            const prod = productsMap.get(score.product_id);
+            
+            // Skip if product not found
+            if (!prod) {
+                console.warn(`⚠️ Product ${score.product_id} not found in products_raw`);
+                return null;
+            }
 
-        return {
-            id: prod.id,
-            variant_id: variant_id,
-            title: prod.title,
-            price: price,
-            image_url: image_url,
-            highlights: highlights,
-            fit_score: score?.fit_score,
-            score_breakdown: score?.score_breakdown,
-            source: 'intent' as const
-        } as EnrichedProduct;
-    });
+            // Robust extraction for Shopify-like schema
+            const price = prod.variants?.[0]?.price || "N/A";
+            const image_url = prod.images?.[0]?.src || "";
+            const variant_id = prod.variants?.[0]?.id?.toString() || prod.variants?.[0]?.variant_id?.toString();
+            const highlights: string[] = [];
+
+            return {
+                id: prod.id,
+                variant_id: variant_id,
+                title: prod.title,
+                price: price,
+                image_url: image_url,
+                highlights: highlights,
+                fit_score: score.fit_score,
+                score_breakdown: score.score_breakdown,
+                source: 'intent' as const
+            } as EnrichedProduct;
+        })
+        .filter((p): p is EnrichedProduct => p !== null); // Remove null entries
 }

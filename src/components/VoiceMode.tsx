@@ -65,7 +65,55 @@ export function VoiceMode() {
         setLastOrderId(orderId);
         setIsCheckoutOpen(false);
         toast.success(`Order placed! ID: ${orderId}`);
+        
+        // Play initial success message
         await playTTS(`Your order has been placed successfully! Order ID is ${orderId}. Check your email for the invoice.`);
+        
+        // Automatically trigger post-checkout conversation flow
+        try {
+            setIsProcessing(true);
+            setAgentState('thinking');
+            
+            // Send a message that will trigger post-checkout chat detection
+            const postCheckoutMessage = "I just placed my order";
+            const newHistory: ChatHistory = [
+                ...chatHistory,
+                { role: 'user', content: postCheckoutMessage }
+            ];
+            
+            const response = await sendMessageToBackend({
+                session_id: sessionId,
+                current_message: postCheckoutMessage,
+                chat_history: newHistory,
+                last_products: [],
+                cart_items: [],
+                address: DEFAULT_DELIVERY_ADDRESS,
+                order_id: orderId // Pass order ID for post-checkout message
+            } as any);
+            
+            // Handle post-checkout response
+            if (response.response_type === 'clarification' && (response as any).intent_id === 'post_checkout') {
+                // This is the closing message from post-checkout
+                const closingMessage = (response as any).acknowledgement || "Thank you for your purchase!";
+                
+                // Add to chat history
+                setChatHistory([
+                    ...newHistory,
+                    { role: 'assistant', content: closingMessage }
+                ]);
+                
+                // Play the personalized closing message
+                await playTTS(closingMessage);
+            }
+            
+            setAgentState(null);
+            setIsProcessing(false);
+        } catch (error) {
+            console.error('Post-checkout flow error:', error);
+            setAgentState(null);
+            setIsProcessing(false);
+            // Don't show error to user - checkout was successful
+        }
     };
 
 
@@ -718,10 +766,6 @@ export function VoiceMode() {
                                             alt={img.caption}
                                             className="w-full aspect-square object-cover bg-gray-800"
                                         />
-                                        <div className="bg-gray-900 p-4">
-                                            <p className="text-white font-medium mb-1">{img.caption}</p>
-                                            <p className="text-gray-400 text-sm">{img.interpretation}</p>
-                                        </div>
                                     </div>
                                 ))}
                             </div>

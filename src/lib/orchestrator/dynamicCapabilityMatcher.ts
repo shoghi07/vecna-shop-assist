@@ -55,7 +55,8 @@ export interface DynamicProduct {
 }
 
 /**
- * Use LLM to infer relevant capability keys for an intent description
+ * Use LLM to infer relevant capability keys based on buyer's direct inputs
+ * Focus ONLY on what the buyer said, not on product descriptions or intent interpretations
  */
 export async function inferCapabilitiesForIntent(
     intentDescription: string,
@@ -64,19 +65,33 @@ export async function inferCapabilitiesForIntent(
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
     const availableKeys = await getCapabilityKeys();
 
-    const prompt = `You are a camera product expert. Given a user's intent, identify the most important camera capabilities.
+    const prompt = `You are analyzing a buyer's direct requirements. Extract camera capabilities ONLY from what the buyer explicitly said.
 
-User Intent: "${intentDescription}"
-User Message: "${userMessage}"
+CRITICAL: Do NOT search product descriptions. Do NOT infer from intent labels. Focus ONLY on the buyer's actual words.
 
-Available capability keys (pick 3-5 most relevant):
+Buyer's Message: "${userMessage}"
+${intentDescription ? `Context: "${intentDescription}"` : ''}
+
+Available capability keys:
 ${availableKeys.map(k => `- ${k}`).join('\n')}
 
-For each selected capability, assign a weight (0.5 to 1.0) based on importance.
+TASK:
+1. Read the buyer's message carefully
+2. Identify which capabilities the buyer is directly asking for or mentioning
+3. Extract explicit requirements (e.g., "low light" → low_light_performance, "portable" → portability, "fast autofocus" → autofocus_reliability)
+4. If buyer mentions specific use cases, map them to capabilities (e.g., "wedding" → low_light + autofocus, "travel" → portability + battery_life)
+5. Do NOT guess or infer beyond what the buyer said
+6. Pick 3-5 most relevant capabilities that match the buyer's explicit requirements
+
+For each selected capability, assign a weight (0.5 to 1.0) based on how directly the buyer mentioned it:
+- 1.0 = Buyer explicitly mentioned this requirement
+- 0.8 = Strongly implied from buyer's use case
+- 0.6 = Moderately relevant based on buyer's context
+- 0.5 = Weakly relevant
 
 Respond with ONLY a JSON array:
 [
-  {"capability_key": "low_light", "weight": 1.0},
+  {"capability_key": "low_light_performance", "weight": 1.0},
   {"capability_key": "autofocus_reliability", "weight": 0.8}
 ]`;
 
@@ -104,7 +119,7 @@ Respond with ONLY a JSON array:
         }
 
         const capabilities = JSON.parse(jsonMatch[0]) as CapabilityWeight[];
-        console.log(`🎯 Inferred capabilities for "${intentDescription}":`, capabilities);
+        console.log(`🎯 Capabilities extracted from buyer's message "${userMessage}":`, capabilities);
         return capabilities;
 
     } catch (error) {
@@ -231,25 +246,31 @@ export async function getProductsByCapabilities(
 
 /**
  * Main fallback function: Try capability-based search when intent fails
+ * Focuses on buyer's direct inputs, not product descriptions
  */
 export async function dynamicProductSearch(
     intentDescription: string,
     userMessage: string,
     limit: number = 3
 ): Promise<DynamicProduct[]> {
-    console.log(`🔄 Dynamic fallback: Searching by capabilities for "${intentDescription}"`);
+    console.log(`🔄 Dynamic capability search: Analyzing buyer's requirements from their message`);
+    console.log(`   Buyer said: "${userMessage}"`);
+    console.log(`   Context: "${intentDescription}"`);
 
-    // Step 1: Infer relevant capabilities
+    // Step 1: Infer relevant capabilities from buyer's message (primary) and context (secondary)
+    // Prioritize userMessage - it contains the buyer's actual requirements
     const capabilities = await inferCapabilitiesForIntent(intentDescription, userMessage);
 
     if (capabilities.length === 0) {
-        console.warn('⚠️ No capabilities inferred, cannot search');
+        console.warn('⚠️ No capabilities extracted from buyer inputs, cannot search');
         return [];
     }
 
-    // Step 2: Query products by capabilities
+    console.log(`🎯 Capabilities extracted from buyer's message:`, capabilities.map(c => `${c.capability_key} (${c.weight})`).join(', '));
+
+    // Step 2: Query products by capabilities (matches against product_capabilities table, NOT descriptions)
     const products = await getProductsByCapabilities(capabilities, limit);
 
-    console.log(`✅ Dynamic search found ${products.length} products`);
+    console.log(`✅ Found ${products.length} products matching buyer's capability requirements`);
     return products;
 }
