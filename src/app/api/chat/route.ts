@@ -22,6 +22,7 @@ import {
 import { getDecisionFrame } from '@/lib/orchestrator/tradeoffGenerator';
 import { getRelevantAddons, generateAddonMessage, generatePaymentModeQuestion } from '@/lib/orchestrator/addonSuggestions';
 import { handleNoProductScenario } from '@/lib/orchestrator/noProductHandler';
+import { loadIntentsWithDescriptions, validateIntentMatch, quickSemanticCheck } from '@/lib/orchestrator/semanticIntentMatcher';
 
 // Types
 interface ChatRequest {
@@ -672,6 +673,41 @@ export async function POST(req: Request) {
             explanation = classification.explanation;
             console.log("📊 CLASSIFICATION:", { intent_id, confidence, ready_for_image_generation: classification.ready_for_image_generation });
 
+            // SEMANTIC VALIDATION: Check if classified intent actually matches user's need
+            if (intent_id && confidence >= 0.5) {
+                // Quick check first (keyword-based, no LLM call)
+                const quickCheck = quickSemanticCheck(intent_id, current_message);
+
+                if (!quickCheck) {
+                    console.log(`🔍 Quick semantic check failed for "${intent_id}", validating with LLM...`);
+
+                    // Full LLM validation against all intent descriptions
+                    const intentsWithDesc = await loadIntentsWithDescriptions();
+                    const contextString = chat_history?.slice(-4).map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n') || '';
+
+                    const validation = await validateIntentMatch(
+                        intent_id,
+                        current_message,
+                        contextString,
+                        intentsWithDesc
+                    );
+
+                    if (validation.should_use_fallback) {
+                        console.log(`⚠️ Semantic mismatch: "${intent_id}" doesn't match "${validation.inferred_need}"`);
+                        console.log(`   Reason: ${validation.match_reason}`);
+                        console.log(`   → Will use dynamic capability fallback`);
+                        // Set intent_id to a marker that triggers dynamic fallback
+                        // but preserve the inferred need for capability matching
+                        (classification as any).inferred_need = validation.inferred_need;
+                        intent_id = validation.matched_intent_id || `dynamic_${validation.inferred_need.replace(/\s+/g, '_').toLowerCase()}`;
+                    } else if (validation.matched_intent_id && validation.matched_intent_id !== intent_id) {
+                        console.log(`✅ Semantic correction: "${intent_id}" → "${validation.matched_intent_id}"`);
+                        intent_id = validation.matched_intent_id;
+                        confidence = validation.confidence;
+                    }
+                }
+            }
+
             // PHASE 1: ENHANCED CONFIDENCE ASSESSMENT
             const confidenceLevel = assessConfidence(confidence);
 
@@ -695,7 +731,7 @@ export async function POST(req: Request) {
 
                 // Strategy switch: Fetch and show products based on best-guess intent
                 try {
-                    const topProducts = await getTopProducts(intent_id, 0, getProductCountForPersona(inferredPersona));
+                    const topProducts = await getTopProducts(intent_id, 0, getProductCountForPersona(inferredPersona), current_message);
 
                     if (topProducts.length > 0) {
                         // Show products with context-aware messaging
@@ -771,7 +807,7 @@ export async function POST(req: Request) {
                             console.error('Image generation failed:', err);
                             return null; // Return null instead of throwing
                         }),
-                        getTopProducts(intent_id, 0, 3).catch(err => {
+                        getTopProducts(intent_id, 0, 3, current_message).catch(err => {
                             console.error('Product pre-fetch failed:', err);
                             return []; // Return empty, will fetch on accept
                         })
@@ -816,7 +852,7 @@ export async function POST(req: Request) {
                 if (cachedProducts.length === 0) {
                     // Cached products not available - fetch now
                     console.log('⏱️  No cached products, fetching now...');
-                    const topProducts = await getTopProducts(intent_id, 0, 3);
+                    const topProducts = await getTopProducts(intent_id, 0, 3, current_message);
                     cachedProducts = topProducts;
                 }
 
@@ -1120,7 +1156,7 @@ export async function POST(req: Request) {
         }
 
         // 3. Recommendation flow (Deterministic + Presentation)
-        const topProducts = await getTopProducts(intent_id, offset, 3);
+        const topProducts = await getTopProducts(intent_id, offset, 3, current_message);
 
         if (topProducts.length === 0) {
             const response: ClarificationResponse = {
