@@ -156,8 +156,19 @@ export function VoiceMode() {
                 // Auto-add to cart
                 await handleAddToCart(response.variant_id, response.product_title);
 
-                // Play confirmation TTS
-                await playTTS(response.acknowledgement);
+                // Play confirmation TTS (includes add-on message if available)
+                let ttsMessage = response.acknowledgement;
+                const addonMessage = (response as any).addon_message;
+                if (addonMessage) {
+                    ttsMessage += ' ' + addonMessage;
+                }
+                await playTTS(ttsMessage);
+
+                // Log add-ons for future UI display
+                const suggestedAddons = (response as any).suggested_addons;
+                if (suggestedAddons && suggestedAddons.length > 0) {
+                    console.log('🛒 Add-on suggestions:', suggestedAddons);
+                }
 
                 setAgentState(null);
                 setIsProcessing(false);
@@ -332,7 +343,8 @@ export function VoiceMode() {
                     setSelectedImageVariant(null);
 
                     // Speak guidance: Combine acknowledgement + question
-                    const ttsMessage = `${response.acknowledgement} ${response.clarifying_question}`;
+                    const ack = (response as any).acknowledgement || '';
+                    const ttsMessage = `${ack} ${response.clarifying_question}`;
                     await playTTS(ttsMessage);
                     // Add to history
                     setChatHistory([
@@ -368,7 +380,7 @@ export function VoiceMode() {
 
                 if (response.response_type === 'clarification') {
                     await playTTS(response.clarifying_question);
-                    setClarificationCount(response.clarification_count || clarificationCount + 1);
+                    setClarificationCount((response as any).clarification_count || clarificationCount + 1);
                 }
             } catch (error) {
                 console.error('Refine handling failed:', error);
@@ -400,7 +412,7 @@ export function VoiceMode() {
 
                 if (response.response_type === 'clarification') {
                     await playTTS(response.clarifying_question);
-                    setClarificationCount(response.clarification_count || clarificationCount + 1);
+                    setClarificationCount((response as any).clarification_count || clarificationCount + 1);
                     // Clear cache for fresh start
                     setCachedProducts([]);
                 }
@@ -501,6 +513,15 @@ export function VoiceMode() {
                                 "{currentResponse.acknowledgement}"
                             </p>
                         </div>
+
+                        {/* AARAV: Decision Frame - Persona-specific context before products */}
+                        {currentResponse.decision_frame && (
+                            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 mb-4 border border-blue-100">
+                                <p className="text-blue-800 font-medium text-center">
+                                    💡 {currentResponse.decision_frame}
+                                </p>
+                            </div>
+                        )}
 
                         {/* Product Recommendations */}
                         {!currentResponse.primary_recommendation ? (
