@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import PDFDocument from 'pdfkit';
-import nodemailer from 'nodemailer';
+// import PDFDocument from 'pdfkit';
+// import nodemailer from 'nodemailer';
 
 // Type definitions
 interface CartItem {
@@ -63,101 +63,24 @@ export async function POST(req: Request) {
 /**
  * Generates a PDF invoice in memory and returns it as a Buffer
  */
+/**
+ * Generates a PDF invoice in memory and returns it as a Buffer
+ * (MOCKED FOR NOW)
+ */
 async function generateInvoicePDF(orderId: string, user: UserDetails, items: CartItem[], total: number): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-        const doc = new PDFDocument();
-        const buffers: Buffer[] = [];
-
-        doc.on('data', buffers.push.bind(buffers));
-        doc.on('end', () => resolve(Buffer.concat(buffers)));
-        doc.on('error', reject);
-
-        // Header
-        doc.fontSize(20).text('INVOICE', { align: 'center' });
-        doc.moveDown();
-        doc.fontSize(12).text(`Order ID: ${orderId}`);
-        doc.text(`Date: ${new Date().toLocaleDateString()}`);
-        doc.moveDown();
-
-        // Bill To
-        doc.text(`Bill To:`);
-        doc.text(user.fullName);
-        doc.text(`${user.address}, ${user.city}`);
-        doc.text(`${user.zipCode}, ${user.country}`);
-        doc.text(`Email: ${user.email}`);
-        doc.moveDown();
-
-        // Items Table Header
-        const yStart = doc.y;
-        doc.text('Item', 50, yStart);
-        doc.text('Qty', 300, yStart);
-        doc.text('Price', 400, yStart);
-        doc.moveDown();
-
-        doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-        doc.moveDown(0.5);
-
-        // Items
-        items.forEach(item => {
-            const price = parseFloat(item.price.replace(/[^0-9.]/g, '')) || 0;
-            const y = doc.y;
-            doc.text(item.title.substring(0, 40), 50, y);
-            doc.text(item.quantity.toString(), 300, y);
-            doc.text(`$${price.toFixed(2)}`, 400, y);
-            doc.moveDown();
-        });
-
-        doc.moveDown();
-        doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-        doc.moveDown();
-
-        // Total
-        doc.fontSize(14).text(`Total: $${total.toFixed(2)}`, { align: 'right' });
-        doc.fontSize(10).text(`Payment Method: ${user.paymentMethod}`, { align: 'right' });
-
-        doc.end();
-    });
+    console.log(`[MOCK PDF] Generating PDF for Order ${orderId}`);
+    return Buffer.from('');
 }
 
 /**
  * Sends order confirmation email with PDF attachment
  */
+/**
+ * Sends order confirmation email with PDF attachment
+ * (MOCKED FOR NOW)
+ */
 async function sendOrderConfirmationEmail(toEmail: string, orderId: string, pdfBuffer: Buffer): Promise<boolean> {
-
-    // Check for credentials
-    const user = process.env.EMAIL_USER;
-    const pass = process.env.EMAIL_PASS;
-
-    if (!user || !pass) {
-        console.log('⚠️ No EMAIL_USER/EMAIL_PASS found. Skipping email send.');
-        console.log(`[MOCK EMAIL] To: ${toEmail}, Subject: Order Confirmation ${orderId}`);
-        return false;
-    }
-
-    try {
-        const transporter = nodemailer.createTransport({
-            service: 'gmail', // Simplest for dev, can be configured for others
-            auth: { user, pass }
-        });
-
-        await transporter.sendMail({
-            from: `"Ladani Store" <${user}>`,
-            to: toEmail,
-            subject: `Order Confirmation - ${orderId}`,
-            text: `Thank you for your order! Your Order ID is ${orderId}. Please find the invoice attached.`,
-            html: `<h1>Thank you for your order!</h1><p>Your Order ID is <strong>${orderId}</strong>.</p><p>Please find the invoice attached.</p>`,
-            attachments: [
-                {
-                    filename: `invoice-${orderId}.pdf`,
-                    content: pdfBuffer
-                }
-            ]
-        });
-
-        console.log(`✅ Email sent to ${toEmail}`);
-        return true;
-    } catch (error) {
-        console.error('❌ Failed to send email:', error);
-        return false;
-    }
+    console.log(`[MOCK EMAIL] To: ${toEmail}, Subject: Order Confirmation ${orderId}`);
+    console.log('PDF Attachment size:', pdfBuffer.length);
+    return true;
 }
